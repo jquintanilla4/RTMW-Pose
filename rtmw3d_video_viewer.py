@@ -45,6 +45,21 @@ def coco_body17_edges() -> np.ndarray:
     )
 
 
+def foot6_edges() -> np.ndarray:
+    """Edges for the 6 foot keypoints (indices 17..22)."""
+    return np.array(
+        [
+            [15, 17],
+            [15, 18],
+            [15, 19],
+            [16, 20],
+            [16, 21],
+            [16, 22],
+        ],
+        dtype=np.int32,
+    )
+
+
 def hand21_edges(base: int) -> np.ndarray:
     """5 finger chains for a 21-keypoint hand, starting at index 'base'."""
     chains = [
@@ -96,13 +111,15 @@ def build_edges_wholebody() -> tuple[np.ndarray, np.ndarray]:
       0..16 body, 17..22 foot, 23..90 face, 91..111 left hand, 112..132 right hand
     """
     body = coco_body17_edges()
+    foot = foot6_edges()
     face = face68_edges(23)
     lhand = hand21_edges(91)
     rhand = hand21_edges(112)
-    edges = np.vstack([body, lhand, rhand, face])
+    edges = np.vstack([body, foot, lhand, rhand, face])
     colors = np.vstack(
         [
             np.tile([0.10, 0.80, 0.95], (len(body), 1)),
+            np.tile([0.40, 0.90, 0.30], (len(foot), 1)),
             np.tile([0.85, 0.30, 0.30], (len(lhand), 1)),
             np.tile([0.60, 0.30, 0.85], (len(rhand), 1)),
             np.tile([0.90, 0.60, 0.20], (len(face), 1)),

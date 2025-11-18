@@ -127,6 +127,17 @@
         ];
       }
 
+      function buildFootEdges() {
+        return [
+          [15, 17],
+          [15, 18],
+          [15, 19],
+          [16, 20],
+          [16, 21],
+          [16, 22],
+        ];
+      }
+
       function buildHandEdges(base) {
         const chains = [
           [0, 1, 2, 3, 4],
@@ -184,6 +195,7 @@
       }
 
       addEdges(buildBodyEdges(), "body");
+      addEdges(buildFootEdges(), "feet");
       addEdges(buildHandEdges(91), "leftHand");
       addEdges(buildHandEdges(112), "rightHand");
       addEdges(buildFaceEdges(23), "face");
