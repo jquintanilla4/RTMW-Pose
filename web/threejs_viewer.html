@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RTMW3D Three.js Viewer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background-color: #0f0f0f;
+        color: #f0f0f0;
+      }
+
+      body {
+        margin: 0;
+        background: #0f0f0f;
+        color: #f0f0f0;
+      }
+
+      #controls {
+        padding: 10px 16px;
+        background: #1a1a1a;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        border-bottom: 1px solid #2b2b2b;
+      }
+
+      #controls label {
+        font-size: 0.9rem;
+      }
+
+      #controls input[type="file"] {
+        color: #d1d1d1;
+      }
+
+      #controls button {
+        padding: 6px 12px;
+        border: none;
+        border-radius: 4px;
+        background: #3273dc;
+        color: #fff;
+        cursor: pointer;
+      }
+
+      #controls button:disabled {
+        background: #555;
+        cursor: not-allowed;
+      }
+
+      #viewer {
+        width: 100%;
+        height: calc(100vh - 70px);
+        position: relative;
+      }
+
+      #status {
+        font-size: 0.9rem;
+        opacity: 0.8;
+      }
+
+      #timeline {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      #timeline input[type="range"] {
+        min-width: 200px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="controls">
+      <label>
+        JSON export:
+        <input id="fileInput" type="file" accept=".json" />
+      </label>
+      <button id="playToggle">Play</button>
+      <label>
+        Speed
+        <input id="speedInput" type="range" min="0.25" max="3" value="1" step="0.25" />
+      </label>
+      <label>
+        Depth gain
+        <input id="zGainInput" type="range" min="0.2" max="5" value="1" step="0.1" />
+      </label>
+      <div id="timeline">
+        <span>Frame</span>
+        <input id="frameSlider" type="range" min="0" max="1" value="0" />
+      </div>
+      <span id="status">Load a JSON file exported by rtmw3d_export_json.py</span>
+    </div>
+    <div id="viewer"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.min.js"></script>
+    <script>
+      const COLORS = {
+        body: [0.1, 0.8, 0.95],
+        feet: [0.4, 0.9, 0.3],
+        face: [0.9, 0.6, 0.2],
+        leftHand: [0.85, 0.3, 0.3],
+        rightHand: [0.6, 0.3, 0.85],
+      };
+
+      function buildBodyEdges() {
+        return [
+          [5, 6],
+          [5, 7],
+          [7, 9],
+          [6, 8],
+          [8, 10],
+          [5, 11],
+          [6, 12],
+          [11, 12],
+          [11, 13],
+          [13, 15],
+          [12, 14],
+          [14, 16],
+          [0, 5],
+          [0, 6],
+          [0, 1],
+          [0, 2],
+          [1, 3],
+          [2, 4],
+        ];
+      }
+
+      function buildHandEdges(base) {
+        const chains = [
+          [0, 1, 2, 3, 4],
+          [0, 5, 6, 7, 8],
+          [0, 9, 10, 11, 12],
+          [0, 13, 14, 15, 16],
+          [0, 17, 18, 19, 20],
+        ];
+        const edges = [];
+        chains.forEach((chain) => {
+          for (let i = 0; i < chain.length - 1; i++) {
+            edges.push([base + chain[i], base + chain[i + 1]]);
+          }
+        });
+        return edges;
+      }
+
+      function buildFaceEdges(base) {
+        const edges = [];
+        for (let i = 0; i < 16; i++) edges.push([base + i, base + i + 1]);
+        for (let i = 17; i < 21; i++) edges.push([base + i, base + i + 1]);
+        for (let i = 22; i < 26; i++) edges.push([base + i, base + i + 1]);
+        for (let i = 27; i < 30; i++) edges.push([base + i, base + i + 1]);
+        for (let i = 31; i < 35; i++) edges.push([base + i, base + i + 1]);
+        const rightEye = [36, 37, 38, 39, 40, 41, 36];
+        const leftEye = [42, 43, 44, 45, 46, 47, 42];
+        for (let i = 0; i < rightEye.length - 1; i++) {
+          edges.push([base + rightEye[i], base + rightEye[i + 1]]);
+        }
+        for (let i = 0; i < leftEye.length - 1; i++) {
+          edges.push([base + leftEye[i], base + leftEye[i + 1]]);
+        }
+        const mouthOuter = [...Array(12).keys()].map((i) => 48 + i);
+        mouthOuter.push(48);
+        for (let i = 0; i < mouthOuter.length - 1; i++) {
+          edges.push([base + mouthOuter[i], base + mouthOuter[i + 1]]);
+        }
+        const mouthInner = [...Array(8).keys()].map((i) => 60 + i);
+        mouthInner.push(60);
+        for (let i = 0; i < mouthInner.length - 1; i++) {
+          edges.push([base + mouthInner[i], base + mouthInner[i + 1]]);
+        }
+        return edges;
+      }
+
+      const EDGE_PAIRS = [];
+      const EDGE_COLOR_PER_EDGE = [];
+
+      function addEdges(edgeList, colorKey) {
+        const color = COLORS[colorKey];
+        edgeList.forEach((edge) => {
+          EDGE_PAIRS.push(edge);
+          EDGE_COLOR_PER_EDGE.push(color);
+        });
+      }
+
+      addEdges(buildBodyEdges(), "body");
+      addEdges(buildHandEdges(91), "leftHand");
+      addEdges(buildHandEdges(112), "rightHand");
+      addEdges(buildFaceEdges(23), "face");
+
+      function buildEdgeColorArray() {
+        const arr = new Float32Array(EDGE_COLOR_PER_EDGE.length * 2 * 3);
+        EDGE_COLOR_PER_EDGE.forEach((color, idx) => {
+          const offset = idx * 6;
+          arr[offset + 0] = color[0];
+          arr[offset + 1] = color[1];
+          arr[offset + 2] = color[2];
+          arr[offset + 3] = color[0];
+          arr[offset + 4] = color[1];
+          arr[offset + 5] = color[2];
+        });
+        return arr;
+      }
+
+      function buildPointColorArray() {
+        const arr = new Float32Array(133 * 3);
+        const ranges = [
+          { start: 0, end: 17, color: COLORS.body },
+          { start: 17, end: 23, color: COLORS.feet },
+          { start: 23, end: 91, color: COLORS.face },
+          { start: 91, end: 112, color: COLORS.leftHand },
+          { start: 112, end: 133, color: COLORS.rightHand },
+        ];
+        ranges.forEach(({ start, end, color }) => {
+          for (let i = start; i < end; i++) {
+            const offset = i * 3;
+            arr[offset + 0] = color[0];
+            arr[offset + 1] = color[1];
+            arr[offset + 2] = color[2];
+          }
+        });
+        return arr;
+      }
+
+      const viewerEl = document.getElementById("viewer");
+      const statusEl = document.getElementById("status");
+      const playBtn = document.getElementById("playToggle");
+      const speedInput = document.getElementById("speedInput");
+      const zGainInput = document.getElementById("zGainInput");
+      const frameSlider = document.getElementById("frameSlider");
+      playBtn.disabled = true;
+      frameSlider.disabled = true;
+      let depthGain = 1;
+      if (zGainInput) zGainInput.value = "1";
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      viewerEl.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0.03, 0.03, 0.03);
+
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+      const orbitTarget = new THREE.Vector3(0, 0.1, 0);
+      const orbitState = { theta: Math.PI, phi: 1.0, radius: 2.6 };
+
+      function updateOrbitCamera() {
+        const minPhi = 0.05;
+        const maxPhi = Math.PI - 0.05;
+        orbitState.phi = Math.min(maxPhi, Math.max(minPhi, orbitState.phi));
+        orbitState.radius = Math.min(10, Math.max(0.4, orbitState.radius));
+        const sinPhi = Math.sin(orbitState.phi);
+        camera.position.set(
+          orbitTarget.x + orbitState.radius * sinPhi * Math.sin(orbitState.theta),
+          orbitTarget.y + orbitState.radius * Math.cos(orbitState.phi),
+          orbitTarget.z + orbitState.radius * sinPhi * Math.cos(orbitState.theta)
+        );
+        camera.lookAt(orbitTarget);
+      }
+      updateOrbitCamera();
+
+      (function setupOrbitInput(canvas) {
+        let pointerDown = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        canvas.addEventListener("pointerdown", (event) => {
+          pointerDown = true;
+          lastX = event.clientX;
+          lastY = event.clientY;
+          canvas.setPointerCapture(event.pointerId);
+        });
+        canvas.addEventListener("pointermove", (event) => {
+          if (!pointerDown) return;
+          const dx = event.clientX - lastX;
+          const dy = event.clientY - lastY;
+          lastX = event.clientX;
+          lastY = event.clientY;
+          orbitState.theta -= dx * 0.005;
+          orbitState.phi -= dy * 0.005;
+          updateOrbitCamera();
+        });
+        canvas.addEventListener("pointerup", (event) => {
+          pointerDown = false;
+          canvas.releasePointerCapture(event.pointerId);
+        });
+        canvas.addEventListener("pointerleave", () => {
+          pointerDown = false;
+        });
+        canvas.addEventListener(
+          "wheel",
+          (event) => {
+            event.preventDefault();
+            const delta = event.deltaY > 0 ? 1.05 : 0.95;
+            orbitState.radius *= delta;
+            updateOrbitCamera();
+          },
+          { passive: false }
+        );
+      })(renderer.domElement);
+
+      const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambient);
+      const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+      dir.position.set(2, 4, 2);
+      scene.add(dir);
+      const grid = new THREE.GridHelper(6, 12, 0x222222, 0x333333);
+      grid.position.y = -0.8;
+      scene.add(grid);
+      const axes = new THREE.AxesHelper(0.4);
+      scene.add(axes);
+
+      function resizeRenderer() {
+        const width = viewerEl.clientWidth;
+        const controlsEl = document.getElementById("controls");
+        const height = Math.max(200, window.innerHeight - (controlsEl ? controlsEl.offsetHeight : 70));
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height);
+      }
+      window.addEventListener("resize", resizeRenderer);
+      resizeRenderer();
+
+      const peopleObjects = [];
+
+      function createPersonObject() {
+        const lineGeom = new THREE.BufferGeometry();
+        const linePositions = new Float32Array(EDGE_PAIRS.length * 2 * 3);
+        lineGeom.setAttribute("position", new THREE.BufferAttribute(linePositions, 3));
+        lineGeom.setAttribute("color", new THREE.BufferAttribute(buildEdgeColorArray(), 3));
+        const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, linewidth: 2 });
+        const lines = new THREE.LineSegments(lineGeom, lineMat);
+
+        const pointGeom = new THREE.BufferGeometry();
+        const pointPositions = new Float32Array(133 * 3);
+        pointGeom.setAttribute("position", new THREE.BufferAttribute(pointPositions, 3));
+        pointGeom.setAttribute("color", new THREE.BufferAttribute(buildPointColorArray(), 3));
+        const pointMat = new THREE.PointsMaterial({ size: 0.04, vertexColors: true });
+        const points = new THREE.Points(pointGeom, pointMat);
+
+        const group = new THREE.Group();
+        group.add(lines);
+        group.add(points);
+        scene.add(group);
+
+        return {
+          group,
+          lines,
+          lineGeom,
+          linePositions,
+          points,
+          pointGeom,
+          pointPositions,
+        };
+      }
+
+      function ensurePersonCount(count) {
+        while (peopleObjects.length < count) {
+          peopleObjects.push(createPersonObject());
+        }
+      }
+
+      function hideUnused(from) {
+        for (let i = from; i < peopleObjects.length; i++) {
+          peopleObjects[i].group.visible = false;
+        }
+      }
+
+      function updatePersonObject(obj, person) {
+        const pts = person.points;
+        const validMask = Array.isArray(person.valid) ? person.valid : null;
+        const hasValid = Array.isArray(validMask) && validMask.length === 133;
+        const pointArray = obj.pointPositions;
+        for (let i = 0; i < 133; i++) {
+          const p = pts[i];
+          const offset = i * 3;
+          pointArray[offset + 0] = p[0];
+          pointArray[offset + 1] = p[1];
+          pointArray[offset + 2] = p[2] * depthGain;
+        }
+        obj.pointGeom.attributes.position.needsUpdate = true;
+
+        const lineArray = obj.linePositions;
+        for (let i = 0; i < EDGE_PAIRS.length; i++) {
+          const [a, b] = EDGE_PAIRS[i];
+          const offset = i * 6;
+          const pa = pts[a];
+          const pb = pts[b];
+          const drawEdge = !hasValid || (validMask[a] && validMask[b]);
+          if (drawEdge) {
+            lineArray[offset + 0] = pa[0];
+            lineArray[offset + 1] = pa[1];
+            lineArray[offset + 2] = pa[2] * depthGain;
+            lineArray[offset + 3] = pb[0];
+            lineArray[offset + 4] = pb[1];
+            lineArray[offset + 5] = pb[2] * depthGain;
+          } else {
+            const collapse = pa || [0, 0, 0];
+            lineArray[offset + 0] = collapse[0];
+            lineArray[offset + 1] = collapse[1];
+            lineArray[offset + 2] = collapse[2] * depthGain;
+            lineArray[offset + 3] = collapse[0];
+            lineArray[offset + 4] = collapse[1];
+            lineArray[offset + 5] = collapse[2] * depthGain;
+          }
+        }
+        obj.lineGeom.attributes.position.needsUpdate = true;
+        obj.group.visible = true;
+      }
+
+      let frames = [];
+      let effectiveFps = 30;
+      let isPlaying = false;
+      let playbackCursor = 0;
+      let lastFrameTime = performance.now();
+      let displayedFrame = -1;
+
+      function showFrame(index) {
+        if (!frames.length) return;
+        const frame = frames[index];
+        const people = frame.people || [];
+        ensurePersonCount(people.length);
+        for (let i = 0; i < people.length; i++) {
+          updatePersonObject(peopleObjects[i], people[i]);
+        }
+        hideUnused(people.length);
+        frameSlider.value = index;
+        statusEl.textContent = `Frame ${index + 1}/${frames.length} • ${people.length} person(s)`;
+        displayedFrame = index;
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        const now = performance.now();
+        const delta = (now - lastFrameTime) / 1000;
+        lastFrameTime = now;
+        if (isPlaying && frames.length > 0 && effectiveFps > 0) {
+          const duration = frames.length / effectiveFps;
+          if (duration > 0) {
+            playbackCursor = (playbackCursor + delta * parseFloat(speedInput.value)) % duration;
+            const idx = Math.min(frames.length - 1, Math.floor(playbackCursor * effectiveFps));
+            if (idx !== displayedFrame) {
+              showFrame(idx);
+            }
+          }
+        }
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      function resetPlayback() {
+        playbackCursor = 0;
+        displayedFrame = -1;
+        frameSlider.value = 0;
+      }
+
+      document.getElementById("fileInput").addEventListener("change", (event) => {
+        const inputEl = event.target;
+        const files = inputEl && inputEl.files ? inputEl.files : null;
+        const file = files && files.length ? files[0] : null;
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            let text = "";
+            if (e.target && typeof e.target.result === "string") {
+              text = e.target.result;
+            } else if (e.target && e.target.result) {
+              const decoder = new TextDecoder("utf-8");
+              text = decoder.decode(e.target.result);
+            }
+          try {
+            const payload = JSON.parse(text);
+            frames = payload.frames || [];
+            const meta = payload.meta || {};
+            effectiveFps = meta.effective_fps || meta.video_fps || 30;
+            if (zGainInput) {
+              // Z is already normalized in the JSON coming from the exporter
+              depthGain = 1;
+              zGainInput.value = "1";
+            }
+            console.log("[viewer] loaded JSON", { frames: frames.length, meta });
+            frameSlider.disabled = !frames.length;
+            frameSlider.max = Math.max(0, frames.length - 1);
+            playBtn.disabled = !frames.length;
+            resetPlayback();
+            if (frames.length) {
+              isPlaying = true;
+              playBtn.textContent = "Pause";
+              statusEl.textContent = `Loaded ${frames.length} frames from ${meta.video || "JSON"}`;
+              showFrame(0);
+            } else {
+              isPlaying = false;
+              playBtn.textContent = "Play";
+              statusEl.textContent = "JSON file contains no frames.";
+            }
+          } catch (err) {
+            console.error(err);
+            statusEl.textContent = "Failed to parse JSON file.";
+          }
+        };
+        reader.readAsText(file);
+      });
+
+      playBtn.addEventListener("click", () => {
+        if (!frames.length) return;
+        isPlaying = !isPlaying;
+        playBtn.textContent = isPlaying ? "Pause" : "Play";
+      });
+
+      frameSlider.addEventListener("input", (event) => {
+        if (!frames.length) return;
+        const target = event.target;
+        const idx = target ? Number(target.value) : 0;
+        const fps = effectiveFps || 30;
+        const duration = frames.length / fps;
+        playbackCursor = duration > 0 ? Math.min(duration, idx / fps) : 0;
+        isPlaying = false;
+        playBtn.textContent = "Play";
+        showFrame(idx);
+      });
+
+      if (zGainInput) {
+        zGainInput.addEventListener("input", (event) => {
+          const target = event.target;
+          depthGain = target ? Number(target.value) : depthGain;
+          if (Number.isNaN(depthGain) || depthGain <= 0) {
+            depthGain = 1;
+          }
+          if (frames.length && displayedFrame >= 0) {
+            showFrame(displayedFrame);
+          }
+        });
+      }
+    </script>
+  </body>
+</html>
