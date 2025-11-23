@@ -318,6 +318,7 @@ export class PoseViewer {
   private frameKeyframes = new Map<number, Set<string>>();
   private effectiveFps = 30;
   private isPlaying = false;
+  private playbackDirection: 'forward' | 'reverse' = 'forward';
   private playbackCursor = 0;
   private lastFrameTime = performance.now();
   private displayedFrame = -1;
@@ -567,7 +568,16 @@ export class PoseViewer {
     if (this.isPlaying && this.frames.length > 0 && this.effectiveFps > 0) {
       const duration = this.frames.length / this.effectiveFps;
       if (duration > 0) {
-        this.playbackCursor = (this.playbackCursor + delta * this.speedMultiplier) % duration;
+        const deltaTime = delta * this.speedMultiplier * (this.playbackDirection === 'reverse' ? -1 : 1);
+        this.playbackCursor = this.playbackCursor + deltaTime;
+
+        // Handle looping
+        if (this.playbackCursor < 0) {
+          this.playbackCursor = duration + this.playbackCursor;
+        } else if (this.playbackCursor >= duration) {
+          this.playbackCursor = this.playbackCursor % duration;
+        }
+
         const idx = Math.min(this.frames.length - 1, Math.floor(this.playbackCursor * this.effectiveFps));
         if (idx !== this.displayedFrame) {
           this.showFrame(idx);
@@ -1102,6 +1112,16 @@ export class PoseViewer {
     return this.isPlaying;
   }
 
+  toggleReversePlayback() {
+    this.playbackDirection = 'reverse';
+    this.setPlaying(!this.isPlaying);
+    return this.isPlaying;
+  }
+
+  setReversePlayback(reverse: boolean) {
+    this.playbackDirection = reverse ? 'reverse' : 'forward';
+  }
+
   private setPlaying(value: boolean) {
     if (this.isPlaying === value) return;
     this.isPlaying = value;
@@ -1115,5 +1135,97 @@ export class PoseViewer {
         resolve(blob);
       }, 'image/png');
     });
+  }
+
+  propagateCurrentFrameBackwards() {
+    if (this.displayedFrame <= 0) return;
+    const currentFrame = this.displayedFrame;
+    const keyframesAtCurrent = this.frameKeyframes.get(currentFrame);
+    if (!keyframesAtCurrent || !keyframesAtCurrent.size) return;
+
+    // Extract joint positions from current frame
+    const jointEdits: Array<{ personIndex: number; jointIndex: number; position: PosePoint }> = [];
+    keyframesAtCurrent.forEach((key) => {
+      const [personIndexStr, jointIndexStr] = key.split(':');
+      const personIndex = parseInt(personIndexStr, 10);
+      const jointIndex = parseInt(jointIndexStr, 10);
+      const frame = this.frames[currentFrame];
+      const person = frame?.people?.[personIndex];
+      const point = person?.points?.[jointIndex];
+      if (point) {
+        jointEdits.push({ personIndex, jointIndex, position: clonePosePoint(point) });
+      }
+    });
+
+    // Apply to all frames from 0 to currentFrame - 1
+    for (let frameIndex = 0; frameIndex < currentFrame; frameIndex++) {
+      jointEdits.forEach(({ personIndex, jointIndex, position }) => {
+        const frame = this.frames[frameIndex];
+        const person = frame?.people?.[personIndex];
+        if (person && Array.isArray(person.points) && person.points[jointIndex]) {
+          person.points[jointIndex] = clonePosePoint(position);
+          // Mark this as a keyframe
+          const key = makeJointKey(personIndex, jointIndex);
+          let frameEntry = this.frameKeyframes.get(frameIndex);
+          if (!frameEntry) {
+            frameEntry = new Set<string>();
+            this.frameKeyframes.set(frameIndex, frameEntry);
+          }
+          frameEntry.add(key);
+        }
+      });
+    }
+
+    this.emitKeyframeState();
+    // Refresh current frame display if needed
+    if (this.displayedFrame === currentFrame) {
+      this.showFrame(currentFrame);
+    }
+  }
+
+  propagateCurrentFrameForwards() {
+    if (this.displayedFrame < 0 || this.displayedFrame >= this.frames.length - 1) return;
+    const currentFrame = this.displayedFrame;
+    const keyframesAtCurrent = this.frameKeyframes.get(currentFrame);
+    if (!keyframesAtCurrent || !keyframesAtCurrent.size) return;
+
+    // Extract joint positions from current frame
+    const jointEdits: Array<{ personIndex: number; jointIndex: number; position: PosePoint }> = [];
+    keyframesAtCurrent.forEach((key) => {
+      const [personIndexStr, jointIndexStr] = key.split(':');
+      const personIndex = parseInt(personIndexStr, 10);
+      const jointIndex = parseInt(jointIndexStr, 10);
+      const frame = this.frames[currentFrame];
+      const person = frame?.people?.[personIndex];
+      const point = person?.points?.[jointIndex];
+      if (point) {
+        jointEdits.push({ personIndex, jointIndex, position: clonePosePoint(point) });
+      }
+    });
+
+    // Apply to all frames from currentFrame + 1 to end
+    for (let frameIndex = currentFrame + 1; frameIndex < this.frames.length; frameIndex++) {
+      jointEdits.forEach(({ personIndex, jointIndex, position }) => {
+        const frame = this.frames[frameIndex];
+        const person = frame?.people?.[personIndex];
+        if (person && Array.isArray(person.points) && person.points[jointIndex]) {
+          person.points[jointIndex] = clonePosePoint(position);
+          // Mark this as a keyframe
+          const key = makeJointKey(personIndex, jointIndex);
+          let frameEntry = this.frameKeyframes.get(frameIndex);
+          if (!frameEntry) {
+            frameEntry = new Set<string>();
+            this.frameKeyframes.set(frameIndex, frameEntry);
+          }
+          frameEntry.add(key);
+        }
+      });
+    }
+
+    this.emitKeyframeState();
+    // Refresh current frame display if needed
+    if (this.displayedFrame === currentFrame) {
+      this.showFrame(currentFrame);
+    }
   }
 }

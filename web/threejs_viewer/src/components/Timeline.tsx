@@ -1,12 +1,16 @@
-import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon } from './Icons'
+import { PlayIcon, PauseIcon, SkipNextIcon, SkipPrevIcon, PlayBackwardIcon } from './Icons'
 
 interface TimelineProps {
     currentFrame: number
     totalFrames: number
     isPlaying: boolean
     onPlayPause: () => void
+    onPlayBackward?: () => void
     onSeek: (frame: number) => void
     keyframes: number[]
+    onPropagateBackwards?: () => void
+    onPropagateForwards?: () => void
+    currentFrameHasKeyframe?: boolean
 }
 
 export function Timeline({
@@ -14,11 +18,16 @@ export function Timeline({
     totalFrames,
     isPlaying,
     onPlayPause,
+    onPlayBackward,
     onSeek,
     keyframes,
+    onPropagateBackwards,
+    onPropagateForwards,
+    currentFrameHasKeyframe = false,
 }: TimelineProps) {
     const maxFrame = Math.max(0, totalFrames - 1)
     const progress = maxFrame > 0 ? (currentFrame / maxFrame) * 100 : 0
+    const frameMarkers = maxFrame > 0 ? Array.from({ length: totalFrames }, (_, i) => i) : []
 
     return (
         <div className="bottom-panel">
@@ -26,21 +35,82 @@ export function Timeline({
                 padding: '8px 16px',
                 display: 'flex',
                 alignItems: 'center',
-                gap: 16,
+                justifyContent: 'space-between',
                 borderBottom: '1px solid var(--border-color)'
             }}>
-                <button className="icon-btn" onClick={() => onSeek(Math.max(0, currentFrame - 1))}>
-                    <SkipPrevIcon />
-                </button>
-                <button className="icon-btn" onClick={onPlayPause}>
-                    {isPlaying ? <PauseIcon /> : <PlayIcon />}
-                </button>
-                <button className="icon-btn" onClick={() => onSeek(Math.min(maxFrame, currentFrame + 1))}>
-                    <SkipNextIcon />
-                </button>
+                {/* Left: Playback controls */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                    <button className="icon-btn" onClick={() => onSeek(Math.max(0, currentFrame - 1))}>
+                        <SkipPrevIcon />
+                    </button>
+                    <button className="icon-btn" onClick={onPlayBackward} title="Play backward (J)">
+                        <PlayBackwardIcon />
+                    </button>
+                    <button className="icon-btn" onClick={onPlayPause}>
+                        {isPlaying ? <PauseIcon /> : <PlayIcon />}
+                    </button>
+                    <button className="icon-btn" onClick={() => onSeek(Math.min(maxFrame, currentFrame + 1))}>
+                        <SkipNextIcon />
+                    </button>
+                </div>
 
-                <div className="time-display" style={{ fontFamily: 'monospace', fontSize: '1.1em' }}>
-                    {currentFrame} <span style={{ color: '#666' }}>/ {maxFrame}</span>
+                {/* Center: Propagation buttons */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button
+                        className="icon-btn"
+                        onClick={onPropagateBackwards}
+                        disabled={!currentFrameHasKeyframe || currentFrame === 0}
+                        title="Propagate edits to all previous frames"
+                        style={{ fontSize: '0.85em', padding: '4px 8px' }}
+                    >
+                        ← Propagate Back
+                    </button>
+                    <button
+                        className="icon-btn"
+                        onClick={onPropagateForwards}
+                        disabled={!currentFrameHasKeyframe || currentFrame >= maxFrame}
+                        title="Propagate edits to all following frames"
+                        style={{ fontSize: '0.85em', padding: '4px 8px' }}
+                    >
+                        Propagate Forward →
+                    </button>
+                </div>
+
+                {/* Right: Time display */}
+                <div className="time-display" style={{ fontFamily: 'monospace', fontSize: '1.1em', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input
+                        type="number"
+                        value={currentFrame}
+                        onChange={(e) => {
+                            const value = parseInt(e.target.value, 10)
+                            if (!isNaN(value)) {
+                                onSeek(Math.max(0, Math.min(maxFrame, value)))
+                            }
+                        }}
+                        onFocus={(e) => e.target.select()}
+                        style={{
+                            width: '50px',
+                            fontFamily: 'monospace',
+                            fontSize: '1.1em',
+                            textAlign: 'right',
+                            background: 'transparent',
+                            border: '1px solid transparent',
+                            color: 'inherit',
+                            padding: '2px 4px',
+                            borderRadius: '2px',
+                            outline: 'none'
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-color)')}
+                        onMouseLeave={(e) => {
+                            if (document.activeElement !== e.currentTarget) {
+                                e.currentTarget.style.borderColor = 'transparent'
+                            }
+                        }}
+                        onBlur={(e) => {
+                            e.currentTarget.style.borderColor = 'transparent'
+                        }}
+                    />
+                    <span style={{ color: '#666' }}>/ {maxFrame}</span>
                 </div>
             </div>
 
@@ -59,6 +129,24 @@ export function Timeline({
                     borderRadius: 4,
                     overflow: 'hidden'
                 }}>
+                    {/* Per-frame markers */}
+                    {frameMarkers.map(frame => (
+                        <div
+                            key={`frame-${frame}`}
+                            style={{
+                                position: 'absolute',
+                                left: `${(frame / maxFrame) * 100}%`,
+                                top: 4,
+                                width: 1,
+                                height: 24,
+                                backgroundColor: 'var(--frame-marker-color)',
+                                opacity: 0.5,
+                                transform: 'translateX(-50%)',
+                                pointerEvents: 'none'
+                            }}
+                        />
+                    ))}
+
                     {/* Keyframe markers */}
                     {keyframes.map(frame => (
                         <div

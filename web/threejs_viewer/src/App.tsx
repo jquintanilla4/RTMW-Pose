@@ -25,6 +25,8 @@ function App() {
   const [transformMode, setTransformMode] = useState<TransformMode>('translate')
   const [keyframeFrames, setKeyframeFrames] = useState<number[]>([])
   const [currentFrameHasKeyframe, setCurrentFrameHasKeyframe] = useState(false)
+  const frameInfoRef = useRef(frameInfo)
+  const editingEnabledRef = useRef(editingEnabled)
 
   useEffect(() => {
     if (!viewerContainerRef.current) return
@@ -60,6 +62,79 @@ function App() {
   useEffect(() => {
     viewerRef.current?.setTransformMode(transformMode)
   }, [transformMode])
+
+  useEffect(() => {
+    frameInfoRef.current = frameInfo
+  }, [frameInfo])
+
+  useEffect(() => {
+    editingEnabledRef.current = editingEnabled
+  }, [editingEnabled])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName
+      if (target?.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+        return
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+
+      const key = event.key.toLowerCase()
+
+      if (key === 'o') {
+        event.preventDefault()
+        document.getElementById('file-upload')?.click()
+        return
+      }
+
+      if (!viewerRef.current) return
+
+      if (key === ' ' || event.code === 'Space') {
+        event.preventDefault()
+        viewerRef.current.togglePlayback()
+        return
+      }
+
+      if (key === ',' || key === '<') {
+        event.preventDefault()
+        const { index, total } = frameInfoRef.current
+        if (total > 0) {
+          viewerRef.current.seekFrame(Math.max(0, index - 1))
+        }
+        return
+      }
+
+      if (key === '.' || key === '>') {
+        event.preventDefault()
+        const { index, total } = frameInfoRef.current
+        if (total > 0) {
+          const maxFrame = Math.max(0, total - 1)
+          viewerRef.current.seekFrame(Math.min(maxFrame, index + 1))
+        }
+        return
+      }
+
+      if (key === 'j') {
+        event.preventDefault()
+        viewerRef.current.toggleReversePlayback()
+        return
+      }
+
+      if (!editingEnabledRef.current) return
+
+      if (key === 'w') {
+        setTransformMode('translate')
+      } else if (key === 's') {
+        setTransformMode('scale')
+      } else if (key === 'r') {
+        setTransformMode('rotate')
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   const handleFileLoad = async (file: File) => {
     const text = await file.text()
@@ -161,8 +236,12 @@ function App() {
         totalFrames={frameInfo.total}
         isPlaying={isPlaying}
         onPlayPause={() => viewerRef.current?.togglePlayback()}
+        onPlayBackward={() => viewerRef.current?.toggleReversePlayback()}
         onSeek={(frame) => viewerRef.current?.seekFrame(frame)}
         keyframes={keyframeFrames}
+        onPropagateBackwards={() => viewerRef.current?.propagateCurrentFrameBackwards()}
+        onPropagateForwards={() => viewerRef.current?.propagateCurrentFrameForwards()}
+        currentFrameHasKeyframe={currentFrameHasKeyframe}
       />
     </div>
   )

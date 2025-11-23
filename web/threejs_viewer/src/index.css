@@ -11,6 +11,7 @@
   --timeline-track: #333;
   --timeline-thumb: #e0e0e0;
   --keyframe-color: #ffcc00;
+  --frame-marker-color: #555;
 }
 
 body {

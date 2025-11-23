@@ -22,14 +22,14 @@ export function Toolbar({ activeMode, onModeChange, enabled }: ToolbarProps) {
             <button
                 className={`tool-btn ${activeMode === 'rotate' ? 'active' : ''}`}
                 onClick={() => onModeChange('rotate')}
-                title="Rotate (E)"
+                title="Rotate (R)"
             >
                 <RotateIcon />
             </button>
             <button
                 className={`tool-btn ${activeMode === 'scale' ? 'active' : ''}`}
                 onClick={() => onModeChange('scale')}
-                title="Scale (R)"
+                title="Scale (S)"
             >
                 <ScaleIcon />
             </button>

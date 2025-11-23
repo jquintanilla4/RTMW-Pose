@@ -26,7 +26,10 @@ export function Header({ onFileLoad, onExport, statusText, fileName }: HeaderPro
                     {statusText}
                 </span>
                 <label className="button-like">
-                    <button onClick={() => document.getElementById('file-upload')?.click()}>
+                    <button
+                        onClick={() => document.getElementById('file-upload')?.click()}
+                        title="Open JSON (O)"
+                    >
                         Open JSON
                     </button>
                     <input
