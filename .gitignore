@@ -17,3 +17,18 @@ models/
 
 exports/*
 models/*
+
+# Node / Vite / React
+node_modules/
+dist/
+dist-ssr/
+.vite/
+.parcel-cache/
+.turbo/
+*.local
+.env
+.env.*
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+bun-debug.log*
