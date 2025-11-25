@@ -3,11 +3,12 @@ import type { ChangeEvent } from 'react'
 interface HeaderProps {
     onFileLoad: (file: File) => void
     onExport: () => void
+    onExportJSON: () => void
     statusText: string
     fileName?: string
 }
 
-export function Header({ onFileLoad, onExport, statusText, fileName }: HeaderProps) {
+export function Header({ onFileLoad, onExport, onExportJSON, statusText, fileName }: HeaderProps) {
     const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0]
         if (file) {
@@ -40,6 +41,7 @@ export function Header({ onFileLoad, onExport, statusText, fileName }: HeaderPro
                         style={{ display: 'none' }}
                     />
                 </label>
+                <button onClick={onExportJSON} style={{ marginRight: 8 }}>Export JSON</button>
                 <button onClick={onExport}>Export Video</button>
             </div>
         </header>

@@ -37,7 +37,7 @@ def center_and_scale(
     valid_mask: np.ndarray | None = None,
     ref_pairs: tuple[tuple[int, int], ...] = ((11, 12), (5, 6)),
     z_gain: float = 0.0,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Normalize a 3D skeleton for consistent viewing.
 
     The pose is centered using hip midpoint (fallback to shoulders or nose), X/Y
@@ -95,4 +95,4 @@ def center_and_scale(
     else:
         normalized[:, 2] *= z_gain
 
-    return normalized
+    return normalized, center, xy_scale

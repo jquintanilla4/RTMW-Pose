@@ -25,19 +25,22 @@ def normalize_pose(
     scores: np.ndarray | None,
     min_score: float,
     z_gain: float,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, float | None]:
     """Center/scale the pose and boost depth according to z_gain (0=auto)."""
     if scores is None:
         valid = np.ones(points.shape[0], dtype=bool)
     else:
         valid = scores > min_score
 
+    center = None
+    scale = None
+
     if np.all(~valid):
         centered = np.zeros_like(points)
     else:
-        centered = center_and_scale(points, valid_mask=valid, z_gain=z_gain)
+        centered, center, scale = center_and_scale(points, valid_mask=valid, z_gain=z_gain)
         centered[:, 1] *= -1.0  # Y-up for the viewer
-    return centered, valid
+    return centered, valid, center, scale
 
 
 def format_person(
@@ -47,11 +50,15 @@ def format_person(
     z_gain: float,
 ) -> dict[str, Any]:
     """Convert a person's 133x3 pose into a JSON-friendly dictionary."""
-    normalized, valid = normalize_pose(points, scores, min_score, z_gain)
+    normalized, valid, center, scale = normalize_pose(points, scores, min_score, z_gain)
     data = {
         "points": normalized.tolist(),
         "valid": valid.tolist(),
     }
+    if center is not None:
+        data["center"] = center.tolist()
+    if scale is not None:
+        data["scale"] = float(scale)
     if scores is not None:
         data["scores"] = scores.astype(float).tolist()
     return data
@@ -192,6 +199,8 @@ def run(
         "sample_stride": step,
         "effective_fps": video_fps / step if step > 0 else video_fps,
         "max_edge": max_edge,
+        "width": frame.shape[1] if 'frame' in locals() else 0,
+        "height": frame.shape[0] if 'frame' in locals() else 0,
         "min_score": min_score,
         "frame_count": len(frames),
         "z_gain": z_gain,

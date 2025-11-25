@@ -302,7 +302,7 @@ def run(
                 if np.all(~valid_mask):
                     full_pts = np.zeros((133, 3), dtype=np.float32)
                 else:
-                    full_pts = center_and_scale(pose3d, valid_mask=valid_mask, z_gain=z_gain)
+                    full_pts, _, _ = center_and_scale(pose3d, valid_mask=valid_mask, z_gain=z_gain)
                     full_pts[:, 1] *= -1.0
 
                 pc = geom_per_person[idx]["points"]

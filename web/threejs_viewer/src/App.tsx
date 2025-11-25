@@ -188,11 +188,24 @@ function App() {
     }
   }
 
+  const handleExportJSON = () => {
+    if (!viewerRef.current) return
+    const json = viewerRef.current.exportJSON()
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${fileName?.replace('.json', '') || 'export'}_edited.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="app-container">
       <Header
         onFileLoad={handleFileLoad}
         onExport={handleExport}
+        onExportJSON={handleExportJSON}
         statusText={statusText}
         fileName={fileName}
       />

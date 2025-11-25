@@ -117,3 +117,11 @@ input[type="number"] {
   -moz-appearance: textfield;
   appearance: textfield;
 }
+
+.marquee-box {
+  position: absolute;
+  border: 1px dashed rgba(77, 163, 255, 0.8);
+  background: rgba(77, 163, 255, 0.15);
+  pointer-events: none;
+  z-index: 15;
+}

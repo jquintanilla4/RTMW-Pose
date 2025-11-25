@@ -32,6 +32,13 @@ export type TransformMode = 'translate' | 'rotate' | 'scale';
 
 type PosePoint = [number, number, number];
 
+type JointEdit = {
+  personIndex: number;
+  jointIndex: number;
+  base: THREE.Vector3;
+  edited: THREE.Vector3;
+};
+
 export interface PosePerson {
   points: PosePoint[];
   valid?: Array<boolean | number>;
@@ -310,9 +317,13 @@ export class PoseViewer {
     pointerId: null as number | null,
     startX: 0,
     startY: 0,
+    currentX: 0,
+    currentY: 0,
     moved: false,
+    marqueeActive: false,
     suppressClick: false,
   };
+  private marqueeElement: HTMLDivElement;
   private frames: PoseFrame[] = [];
   private baseFrames: PoseFrame[] = [];
   private frameKeyframes = new Map<number, Set<string>>();
@@ -325,6 +336,7 @@ export class PoseViewer {
   private animationHandle = 0;
   private depthGain = 1;
   private speedMultiplier = 1;
+  private meta: any = {};
 
   constructor(options: PoseViewerOptions) {
     this.container = options.container;
@@ -333,6 +345,11 @@ export class PoseViewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.container.appendChild(this.renderer.domElement);
+
+    this.marqueeElement = document.createElement('div');
+    this.marqueeElement.className = 'marquee-box';
+    this.marqueeElement.style.display = 'none';
+    this.container.appendChild(this.marqueeElement);
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0.03, 0.03, 0.03);
@@ -409,9 +426,14 @@ export class PoseViewer {
     canvas.removeEventListener('pointerdown', this.handleSelectionPointerDown);
     canvas.removeEventListener('pointermove', this.handleSelectionPointerMove);
     canvas.removeEventListener('pointerup', this.handleSelectionPointerUp);
+    canvas.removeEventListener('pointerleave', this.handleSelectionPointerCancel);
+    canvas.removeEventListener('pointercancel', this.handleSelectionPointerCancel);
     this.transformControls.dispose();
     this.renderer.dispose();
     this.container.removeChild(canvas);
+    if (this.marqueeElement.parentElement === this.container) {
+      this.container.removeChild(this.marqueeElement);
+    }
   }
 
   private handleWindowResize = () => {
@@ -457,6 +479,7 @@ export class PoseViewer {
     canvas.addEventListener('pointermove', (event: PointerEvent) => {
       if (orbitPointer.pointerId !== event.pointerId) return;
       if (this.editingState.transformDragging) return;
+      if (this.editingState.enabled && this.selectionPointerState.pointerId !== null) return;
       const dx = event.clientX - orbitPointer.lastX;
       const dy = event.clientY - orbitPointer.lastY;
       if (!orbitPointer.active) {
@@ -502,27 +525,42 @@ export class PoseViewer {
     canvas.addEventListener('pointerdown', this.handleSelectionPointerDown);
     canvas.addEventListener('pointermove', this.handleSelectionPointerMove);
     canvas.addEventListener('pointerup', this.handleSelectionPointerUp);
+    canvas.addEventListener('pointerleave', this.handleSelectionPointerCancel);
+    canvas.addEventListener('pointercancel', this.handleSelectionPointerCancel);
   }
 
   private handleSelectionPointerDown = (event: PointerEvent) => {
     if (!this.editingState.enabled || event.button !== 0) return;
+    if (!(event.metaKey || event.ctrlKey)) return;
+    if (!(event.metaKey || event.ctrlKey)) return;
     console.log('handleSelectionPointerDown', event.clientX, event.clientY);
     if (this.selectionPointerState.suppressClick) return;
     this.selectionPointerState.pointerId = event.pointerId;
     this.selectionPointerState.startX = event.clientX;
     this.selectionPointerState.startY = event.clientY;
+    this.selectionPointerState.currentX = event.clientX;
+    this.selectionPointerState.currentY = event.clientY;
     this.selectionPointerState.moved = false;
+    this.selectionPointerState.marqueeActive = false;
+    this.updateMarqueeVisual();
+    this.renderer.domElement.setPointerCapture(event.pointerId);
   };
 
   private handleSelectionPointerMove = (event: PointerEvent) => {
     if (!this.editingState.enabled) return;
     if (this.selectionPointerState.suppressClick) return;
     if (this.selectionPointerState.pointerId !== event.pointerId) return;
-    if (this.selectionPointerState.moved) return;
+    if (this.editingState.transformDragging) return;
+    this.selectionPointerState.currentX = event.clientX;
+    this.selectionPointerState.currentY = event.clientY;
     const dx = event.clientX - this.selectionPointerState.startX;
     const dy = event.clientY - this.selectionPointerState.startY;
-    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+    if (!this.selectionPointerState.moved && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
       this.selectionPointerState.moved = true;
+      this.selectionPointerState.marqueeActive = true;
+    }
+    if (this.selectionPointerState.marqueeActive) {
+      this.updateMarqueeVisual();
     }
   };
 
@@ -534,10 +572,16 @@ export class PoseViewer {
     }
     if (this.selectionPointerState.pointerId !== event.pointerId) return;
     const moved = this.selectionPointerState.moved;
+    const wasMarquee = this.selectionPointerState.marqueeActive;
     this.selectionPointerState.pointerId = null;
     this.selectionPointerState.moved = false;
+    this.stopMarquee();
+    this.renderer.domElement.releasePointerCapture(event.pointerId);
     if (this.editingState.transformDragging) return;
-    if (!moved) {
+    if (wasMarquee) {
+      const additive = event.shiftKey;
+      this.selectHandlesInMarquee(additive);
+    } else if (!moved) {
       const hit = this.selectJointAtEvent(event);
       if (!hit && !event.shiftKey && !event.metaKey) {
         // Only clear if not dragging transform
@@ -547,6 +591,98 @@ export class PoseViewer {
       }
     }
   };
+
+  private handleSelectionPointerCancel = (event: PointerEvent) => {
+    if (this.selectionPointerState.pointerId !== null && this.selectionPointerState.pointerId !== event.pointerId) {
+      return;
+    }
+    this.selectionPointerState.pointerId = null;
+    this.selectionPointerState.moved = false;
+    this.stopMarquee();
+    this.renderer.domElement.releasePointerCapture(event.pointerId);
+  };
+
+  private stopMarquee() {
+    this.selectionPointerState.marqueeActive = false;
+    this.updateMarqueeVisual();
+  }
+
+  private updateMarqueeVisual() {
+    if (!this.selectionPointerState.marqueeActive) {
+      this.marqueeElement.style.display = 'none';
+      return;
+    }
+    const rect = this.container.getBoundingClientRect();
+    const x1 = this.selectionPointerState.startX;
+    const y1 = this.selectionPointerState.startY;
+    const x2 = this.selectionPointerState.currentX;
+    const y2 = this.selectionPointerState.currentY;
+    const left = Math.min(x1, x2) - rect.left;
+    const top = Math.min(y1, y2) - rect.top;
+    const width = Math.abs(x1 - x2);
+    const height = Math.abs(y1 - y2);
+    this.marqueeElement.style.display = 'block';
+    this.marqueeElement.style.left = `${left}px`;
+    this.marqueeElement.style.top = `${top}px`;
+    this.marqueeElement.style.width = `${width}px`;
+    this.marqueeElement.style.height = `${height}px`;
+  }
+
+  private selectHandlesInMarquee(additive: boolean) {
+    const x1 = this.selectionPointerState.startX;
+    const y1 = this.selectionPointerState.startY;
+    const x2 = this.selectionPointerState.currentX;
+    const y2 = this.selectionPointerState.currentY;
+    const minX = Math.min(x1, x2);
+    const maxX = Math.max(x1, x2);
+    const minY = Math.min(y1, y2);
+    const maxY = Math.max(y1, y2);
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const selected: JointHandle[] = [];
+    this.peopleObjects.forEach((obj) => {
+      if (!obj.group.visible) return;
+      obj.jointHandles.forEach((handle) => {
+        if (!handle.visible) return;
+        handle.getWorldPosition(this.tempVector3);
+        this.tempVector3.project(this.camera);
+        const screenX = (this.tempVector3.x * 0.5 + 0.5) * rect.width + rect.left;
+        const screenY = (this.tempVector3.y * -0.5 + 0.5) * rect.height + rect.top;
+        if (screenX >= minX && screenX <= maxX && screenY >= minY && screenY <= maxY) {
+          selected.push(handle);
+        }
+      });
+    });
+    this.applySelectionForHandles(selected, additive);
+  }
+
+  private applySelectionForHandles(handles: JointHandle[], additive: boolean) {
+    const unique = Array.from(new Set(handles));
+    if (!additive) {
+      if (this.editingState.selectedHandles.length) {
+        this.editingState.selectedHandles.forEach((selected) => {
+          if (!unique.includes(selected)) this.setHandleSelected(selected, false);
+        });
+      }
+      this.editingState.selectedHandles = [];
+      unique.forEach((handle) => {
+        this.setHandleSelected(handle, true);
+        this.editingState.selectedHandles.push(handle);
+      });
+    } else {
+      unique.forEach((handle) => {
+        const existingIndex = this.editingState.selectedHandles.indexOf(handle);
+        if (existingIndex >= 0) {
+          this.setHandleSelected(handle, false);
+          this.editingState.selectedHandles.splice(existingIndex, 1);
+        } else {
+          this.setHandleSelected(handle, true);
+          this.editingState.selectedHandles.push(handle);
+        }
+      });
+    }
+    this.refreshSelectionProxyFromHandles();
+    this.updateSelectionInfo();
+  }
 
 
 
@@ -746,7 +882,7 @@ export class PoseViewer {
     }
     if (!this.editingState.selectedHandles.length) {
       this.callbacks.onSelectionInfoChange({
-        text: 'Click joints to select. Shift-click to add/remove.',
+        text: 'Hold Cmd/Ctrl then click or drag to select. Shift adds/removes.',
         hasSelection: false,
       });
     } else {
@@ -1013,31 +1149,14 @@ export class PoseViewer {
     const intersections = this.raycaster.intersectObjects(visibleHandles, false);
     if (!intersections.length) return false;
     const targetHandle = intersections[0].object as JointHandle;
-    const additive = event.shiftKey || event.metaKey;
+    const additive = event.shiftKey;
     this.applyHandleSelection(targetHandle, additive);
     return true;
   }
 
   private applyHandleSelection(handle: JointHandle, additive: boolean) {
     if (!handle) return;
-    if (!additive) {
-      this.editingState.selectedHandles.forEach((selected) => {
-        if (selected !== handle) this.setHandleSelected(selected, false);
-      });
-      this.editingState.selectedHandles = [];
-    }
-    const existingIndex = this.editingState.selectedHandles.indexOf(handle);
-    if (existingIndex >= 0) {
-      if (additive) {
-        this.setHandleSelected(handle, false);
-        this.editingState.selectedHandles.splice(existingIndex, 1);
-      }
-    } else {
-      this.setHandleSelected(handle, true);
-      this.editingState.selectedHandles.push(handle);
-    }
-    this.refreshSelectionProxyFromHandles();
-    this.updateSelectionInfo();
+    this.applySelectionForHandles([handle], additive);
   }
 
   private showFrame(index: number) {
@@ -1066,12 +1185,12 @@ export class PoseViewer {
       this.baseFrames = clonePoseFrames(parsedFrames);
       this.frames = clonePoseFrames(parsedFrames);
       this.frameKeyframes.clear();
-      const meta = payload.meta || {};
-      this.effectiveFps = meta.effective_fps || meta.video_fps || 30;
+      this.meta = payload.meta || {};
+      this.effectiveFps = this.meta.effective_fps || this.meta.video_fps || 30;
       this.depthGain = 1;
       this.callbacks.onStatusChange?.(
         this.frames.length
-          ? `Loaded ${this.frames.length} frames from ${meta.video || sourceLabel || 'JSON'}`
+          ? `Loaded ${this.frames.length} frames from ${this.meta.video || sourceLabel || 'JSON'}`
           : 'JSON file contains no frames.'
       );
       this.resetPlayback();
@@ -1089,6 +1208,14 @@ export class PoseViewer {
       console.error(error);
       this.callbacks.onStatusChange?.('Failed to parse JSON file.');
     }
+  }
+
+  exportJSON(): string {
+    const payload: PosePayload = {
+      meta: this.meta,
+      frames: this.frames,
+    };
+    return JSON.stringify(payload, null, 2);
   }
 
   private resetPlayback() {
@@ -1137,43 +1264,197 @@ export class PoseViewer {
     });
   }
 
-  propagateCurrentFrameBackwards() {
-    if (this.displayedFrame <= 0) return;
-    const currentFrame = this.displayedFrame;
-    const keyframesAtCurrent = this.frameKeyframes.get(currentFrame);
-    if (!keyframesAtCurrent || !keyframesAtCurrent.size) return;
+  private collectJointEditsForFrame(frameIndex: number): JointEdit[] {
+    const keys = this.frameKeyframes.get(frameIndex);
+    if (!keys || !keys.size) return [];
+    const edits: JointEdit[] = [];
+    const baseFrame = this.baseFrames[frameIndex];
+    const currentFrame = this.frames[frameIndex];
+    if (!baseFrame || !currentFrame) return [];
 
-    // Extract joint positions from current frame
-    const jointEdits: Array<{ personIndex: number; jointIndex: number; position: PosePoint }> = [];
-    keyframesAtCurrent.forEach((key) => {
+    keys.forEach((key) => {
       const [personIndexStr, jointIndexStr] = key.split(':');
       const personIndex = parseInt(personIndexStr, 10);
       const jointIndex = parseInt(jointIndexStr, 10);
-      const frame = this.frames[currentFrame];
-      const person = frame?.people?.[personIndex];
-      const point = person?.points?.[jointIndex];
-      if (point) {
-        jointEdits.push({ personIndex, jointIndex, position: clonePosePoint(point) });
-      }
+      const basePerson = baseFrame.people?.[personIndex];
+      const currentPerson = currentFrame.people?.[personIndex];
+      const basePoint = basePerson?.points?.[jointIndex];
+      const editedPoint = currentPerson?.points?.[jointIndex];
+      if (!basePoint || !editedPoint) return;
+      edits.push({
+        personIndex,
+        jointIndex,
+        base: new THREE.Vector3(basePoint[0], basePoint[1], basePoint[2]),
+        edited: new THREE.Vector3(editedPoint[0], editedPoint[1], editedPoint[2]),
+      });
     });
 
-    // Apply to all frames from 0 to currentFrame - 1
+    return edits;
+  }
+
+  private computeTransformFromEdits(edits: JointEdit[]) {
+    if (!edits.length) return null;
+    const centroidBase = new THREE.Vector3();
+    const centroidEdited = new THREE.Vector3();
+    edits.forEach(({ base, edited }) => {
+      centroidBase.add(base);
+      centroidEdited.add(edited);
+    });
+    centroidBase.multiplyScalar(1 / edits.length);
+    centroidEdited.multiplyScalar(1 / edits.length);
+
+    const centeredBase: THREE.Vector3[] = [];
+    const centeredEdited: THREE.Vector3[] = [];
+    edits.forEach(({ base, edited }) => {
+      centeredBase.push(base.clone().sub(centroidBase));
+      centeredEdited.push(edited.clone().sub(centroidEdited));
+    });
+
+    let denom = 0;
+    centeredBase.forEach((v) => {
+      denom += v.lengthSq();
+    });
+
+    // Default to translation-only if points collapse.
+    const rotation = new THREE.Quaternion();
+    let scale = 1;
+    if (denom < 1e-12) {
+      return {
+        rotation,
+        scale,
+        translation: centroidEdited.clone().sub(centroidBase),
+      };
+    }
+
+    // Horn's method to get best-fit rotation without SVD.
+    let Sxx = 0;
+    let Sxy = 0;
+    let Sxz = 0;
+    let Syx = 0;
+    let Syy = 0;
+    let Syz = 0;
+    let Szx = 0;
+    let Szy = 0;
+    let Szz = 0;
+    for (let i = 0; i < centeredBase.length; i++) {
+      const b = centeredBase[i];
+      const e = centeredEdited[i];
+      Sxx += b.x * e.x;
+      Sxy += b.x * e.y;
+      Sxz += b.x * e.z;
+      Syx += b.y * e.x;
+      Syy += b.y * e.y;
+      Syz += b.y * e.z;
+      Szx += b.z * e.x;
+      Szy += b.z * e.y;
+      Szz += b.z * e.z;
+    }
+
+    const n00 = Sxx + Syy + Szz;
+    const n01 = Syz - Szy;
+    const n02 = Szx - Sxz;
+    const n03 = Sxy - Syx;
+    const n11 = Sxx - Syy - Szz;
+    const n12 = Sxy + Syx;
+    const n13 = Szx + Sxz;
+    const n22 = -Sxx + Syy - Szz;
+    const n23 = Syz + Szy;
+    const n33 = -Sxx - Syy + Szz;
+
+    let q0 = 1;
+    let q1 = 0;
+    let q2 = 0;
+    let q3 = 0;
+    for (let i = 0; i < 30; i++) {
+      const nq0 = n00 * q0 + n01 * q1 + n02 * q2 + n03 * q3;
+      const nq1 = n01 * q0 + n11 * q1 + n12 * q2 + n13 * q3;
+      const nq2 = n02 * q0 + n12 * q1 + n22 * q2 + n23 * q3;
+      const nq3 = n03 * q0 + n13 * q1 + n23 * q2 + n33 * q3;
+      const norm = Math.hypot(nq0, nq1, nq2, nq3);
+      if (norm < 1e-12) break;
+      const invNorm = 1 / norm;
+      const nextQ0 = nq0 * invNorm;
+      const nextQ1 = nq1 * invNorm;
+      const nextQ2 = nq2 * invNorm;
+      const nextQ3 = nq3 * invNorm;
+      const dot = Math.abs(nextQ0 * q0 + nextQ1 * q1 + nextQ2 * q2 + nextQ3 * q3);
+      q0 = nextQ0;
+      q1 = nextQ1;
+      q2 = nextQ2;
+      q3 = nextQ3;
+      if (1 - dot < 1e-7) break;
+    }
+    rotation.set(q1, q2, q3, q0).normalize();
+
+    let numer = 0;
+    for (let i = 0; i < centeredBase.length; i++) {
+      const rotated = centeredBase[i].clone().applyQuaternion(rotation);
+      numer += rotated.dot(centeredEdited[i]);
+    }
+    scale = numer / denom;
+
+    return {
+      rotation,
+      scale,
+      translation: centroidEdited.clone().sub(centroidBase),
+    };
+  }
+
+  private computePivotForFrame(frameIndex: number, edits: JointEdit[]) {
+    const frame = this.frames[frameIndex];
+    if (!frame) return null;
+    const pivot = new THREE.Vector3();
+    let count = 0;
+    edits.forEach(({ personIndex, jointIndex }) => {
+      const person = frame.people?.[personIndex];
+      const point = person?.points?.[jointIndex];
+      if (!point) return;
+      pivot.add(new THREE.Vector3(point[0], point[1], point[2]));
+      count++;
+    });
+    if (!count) return null;
+    pivot.multiplyScalar(1 / count);
+    return pivot;
+  }
+
+  private applyTransformToFrame(frameIndex: number, edits: JointEdit[], transform: { rotation: THREE.Quaternion; scale: number; translation: THREE.Vector3 }) {
+    const frame = this.frames[frameIndex];
+    if (!frame) return;
+    const pivot = this.computePivotForFrame(frameIndex, edits);
+    if (!pivot) return;
+
+    edits.forEach(({ personIndex, jointIndex }) => {
+      const person = frame.people?.[personIndex];
+      const point = person?.points?.[jointIndex];
+      if (!person || !point) return;
+
+      const current = new THREE.Vector3(point[0], point[1], point[2]);
+      const relative = current.sub(pivot);
+      relative.applyQuaternion(transform.rotation);
+      relative.multiplyScalar(transform.scale);
+      const result = relative.add(pivot).add(transform.translation);
+      person.points[jointIndex] = [result.x, result.y, result.z];
+
+      const key = makeJointKey(personIndex, jointIndex);
+      let frameEntry = this.frameKeyframes.get(frameIndex);
+      if (!frameEntry) {
+        frameEntry = new Set<string>();
+        this.frameKeyframes.set(frameIndex, frameEntry);
+      }
+      frameEntry.add(key);
+    });
+  }
+
+  propagateCurrentFrameBackwards() {
+    if (this.displayedFrame <= 0) return;
+    const currentFrame = this.displayedFrame;
+    const edits = this.collectJointEditsForFrame(currentFrame);
+    if (!edits.length) return;
+    const transform = this.computeTransformFromEdits(edits);
+    if (!transform) return;
+
     for (let frameIndex = 0; frameIndex < currentFrame; frameIndex++) {
-      jointEdits.forEach(({ personIndex, jointIndex, position }) => {
-        const frame = this.frames[frameIndex];
-        const person = frame?.people?.[personIndex];
-        if (person && Array.isArray(person.points) && person.points[jointIndex]) {
-          person.points[jointIndex] = clonePosePoint(position);
-          // Mark this as a keyframe
-          const key = makeJointKey(personIndex, jointIndex);
-          let frameEntry = this.frameKeyframes.get(frameIndex);
-          if (!frameEntry) {
-            frameEntry = new Set<string>();
-            this.frameKeyframes.set(frameIndex, frameEntry);
-          }
-          frameEntry.add(key);
-        }
-      });
+      this.applyTransformToFrame(frameIndex, edits, transform);
     }
 
     this.emitKeyframeState();
@@ -1186,40 +1467,13 @@ export class PoseViewer {
   propagateCurrentFrameForwards() {
     if (this.displayedFrame < 0 || this.displayedFrame >= this.frames.length - 1) return;
     const currentFrame = this.displayedFrame;
-    const keyframesAtCurrent = this.frameKeyframes.get(currentFrame);
-    if (!keyframesAtCurrent || !keyframesAtCurrent.size) return;
+    const edits = this.collectJointEditsForFrame(currentFrame);
+    if (!edits.length) return;
+    const transform = this.computeTransformFromEdits(edits);
+    if (!transform) return;
 
-    // Extract joint positions from current frame
-    const jointEdits: Array<{ personIndex: number; jointIndex: number; position: PosePoint }> = [];
-    keyframesAtCurrent.forEach((key) => {
-      const [personIndexStr, jointIndexStr] = key.split(':');
-      const personIndex = parseInt(personIndexStr, 10);
-      const jointIndex = parseInt(jointIndexStr, 10);
-      const frame = this.frames[currentFrame];
-      const person = frame?.people?.[personIndex];
-      const point = person?.points?.[jointIndex];
-      if (point) {
-        jointEdits.push({ personIndex, jointIndex, position: clonePosePoint(point) });
-      }
-    });
-
-    // Apply to all frames from currentFrame + 1 to end
     for (let frameIndex = currentFrame + 1; frameIndex < this.frames.length; frameIndex++) {
-      jointEdits.forEach(({ personIndex, jointIndex, position }) => {
-        const frame = this.frames[frameIndex];
-        const person = frame?.people?.[personIndex];
-        if (person && Array.isArray(person.points) && person.points[jointIndex]) {
-          person.points[jointIndex] = clonePosePoint(position);
-          // Mark this as a keyframe
-          const key = makeJointKey(personIndex, jointIndex);
-          let frameEntry = this.frameKeyframes.get(frameIndex);
-          if (!frameEntry) {
-            frameEntry = new Set<string>();
-            this.frameKeyframes.set(frameIndex, frameEntry);
-          }
-          frameEntry.add(key);
-        }
-      });
+      this.applyTransformToFrame(frameIndex, edits, transform);
     }
 
     this.emitKeyframeState();
