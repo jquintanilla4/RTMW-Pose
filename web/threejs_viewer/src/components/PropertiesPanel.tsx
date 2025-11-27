@@ -129,7 +129,12 @@ export function PropertiesPanel({
                 </div>
 
                 <div className="button-row" style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    <button onClick={onCameraSyncFromViewport} disabled={cameraLocked} style={{ flex: 1 }}>
+                    <button
+                        onClick={onCameraSyncFromViewport}
+                        disabled={cameraLocked}
+                        title="Copy what you see in the viewport into the camera view"
+                        style={{ flex: 1 }}
+                    >
                         Set From Viewport
                     </button>
                     <button

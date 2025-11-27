@@ -68,12 +68,14 @@ export const LoopIcon = () => (
 
 export const SkipNextIcon = () => (
     <svg viewBox="0 0 24 24" fill="currentColor">
-        <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+        <polygon points="6,6 6,18 14,12" />
+        <rect x="18" y="6" width="2" height="12" rx="0.5" />
     </svg>
 )
 
 export const SkipPrevIcon = () => (
     <svg viewBox="0 0 24 24" fill="currentColor">
-        <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
+        <rect x="4" y="6" width="2" height="12" rx="0.5" />
+        <polygon points="18,6 18,18 10,12" />
     </svg>
 )

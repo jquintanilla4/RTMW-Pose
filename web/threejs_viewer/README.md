@@ -22,7 +22,7 @@ Interactive viewer and lightweight editor for RTMW3D whole-body pose sequences. 
 
 ## Using the editor
 - Load data: click `Open JSON` and select the export from `rtmw3d_export_json.py`. The status line shows frame count and source info.
-- Navigation: orbit/zoom with the mouse when editing is disabled (drag + scroll). Editing mode hides orbit controls so selection stays precise.
+- Navigation: orbit with left-drag, pan with right-drag, and zoom with scroll when editing is disabled. Editing mode hides orbit controls so selection stays precise.
 - Playback & timeline: play/pause, step prev/next frame, or scrub the slider. Yellow ticks mark frames where joints were edited; the counter shows the current frame and total.
 - Scene settings: `Playback Speed` scales the effective FPS; `Depth Gain` rescales Z so the pose reads cleanly.
 - Editing mode: click `Start Editing` to reveal per-joint handles. Click a handle to select, Shift/Cmd-click to multi-select, and use the toolbar (or `W`/`E`/`R`) to translate/rotate/scale the selection. Playback pauses while editing.

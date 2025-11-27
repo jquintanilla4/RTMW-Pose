@@ -334,6 +334,8 @@ export class PoseViewer {
   private pointerNdc = new THREE.Vector2();
   private tempMatrixA = new THREE.Matrix4();
   private tempVector3 = new THREE.Vector3();
+  private tempVectorA = new THREE.Vector3();
+  private tempVectorB = new THREE.Vector3();
   private editingState = {
     enabled: false,
     selectedHandles: [] as JointHandle[],
@@ -534,6 +536,24 @@ export class PoseViewer {
     }
   }
 
+  private panOrbit(deltaX: number, deltaY: number) {
+    const camera = this.getActiveCamera();
+    camera.updateMatrixWorld();
+    const offset = this.tempVector3.copy(camera.position).sub(this.orbitTarget);
+    const targetDistance = offset.length() * Math.tan((camera.fov * Math.PI) / 360);
+    const panX = (2 * deltaX * targetDistance) / this.renderer.domElement.clientHeight;
+    const panY = (2 * deltaY * targetDistance) / this.renderer.domElement.clientHeight;
+
+    this.tempVectorA.setFromMatrixColumn(camera.matrix, 0).multiplyScalar(-panX);
+    this.tempVectorB.setFromMatrixColumn(camera.matrix, 1).multiplyScalar(panY);
+    this.orbitTarget.add(this.tempVectorA);
+    this.orbitTarget.add(this.tempVectorB);
+    this.updateOrbitCamera(this.getActiveOrbitState(), this.getActiveCamera());
+    if (this.viewMode === 'camera') {
+      this.afterShotCameraChanged();
+    }
+  }
+
   private getActiveCamera() {
     return this.viewMode === 'camera' ? this.shotCamera : this.viewportCamera;
   }
@@ -620,15 +640,16 @@ export class PoseViewer {
 
   private setupOrbitInput() {
     const canvas = this.renderer.domElement;
-    const orbitPointer = { pointerId: null as number | null, lastX: 0, lastY: 0, active: false };
+    const orbitPointer = { pointerId: null as number | null, lastX: 0, lastY: 0, active: false, mode: 'rotate' as 'rotate' | 'pan' };
 
     canvas.addEventListener('pointerdown', (event: PointerEvent) => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 && event.button !== 2) return;
       if (this.viewMode === 'camera' && this.cameraLocked) return;
+      orbitPointer.mode = event.button === 2 ? 'pan' : 'rotate';
       orbitPointer.pointerId = event.pointerId;
       orbitPointer.lastX = event.clientX;
       orbitPointer.lastY = event.clientY;
-      orbitPointer.active = this.viewMode === 'camera' ? true : !this.editingState.enabled;
+      orbitPointer.active = orbitPointer.mode === 'rotate' ? (this.viewMode === 'camera' ? true : !this.editingState.enabled) : true;
       canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener('pointermove', (event: PointerEvent) => {
@@ -638,21 +659,27 @@ export class PoseViewer {
       if (this.editingState.enabled && this.selectionPointerState.pointerId !== null) return;
       const dx = event.clientX - orbitPointer.lastX;
       const dy = event.clientY - orbitPointer.lastY;
-      if (!orbitPointer.active) {
-        const threshold = 4;
-        if (Math.abs(dx) < threshold && Math.abs(dy) < threshold) {
-          return;
+      if (orbitPointer.mode === 'rotate') {
+        if (!orbitPointer.active) {
+          const threshold = 4;
+          if (Math.abs(dx) < threshold && Math.abs(dy) < threshold) {
+            return;
+          }
+          orbitPointer.active = true;
         }
-        orbitPointer.active = true;
-      }
-      orbitPointer.lastX = event.clientX;
-      orbitPointer.lastY = event.clientY;
-      const orbitState = this.getActiveOrbitState();
-      orbitState.theta -= dx * 0.005;
-      orbitState.phi -= dy * 0.005;
-      this.updateOrbitCamera(orbitState, this.getActiveCamera());
-      if (this.viewMode === 'camera') {
-        this.afterShotCameraChanged();
+        orbitPointer.lastX = event.clientX;
+        orbitPointer.lastY = event.clientY;
+        const orbitState = this.getActiveOrbitState();
+        orbitState.theta -= dx * 0.005;
+        orbitState.phi -= dy * 0.005;
+        this.updateOrbitCamera(orbitState, this.getActiveCamera());
+        if (this.viewMode === 'camera') {
+          this.afterShotCameraChanged();
+        }
+      } else {
+        orbitPointer.lastX = event.clientX;
+        orbitPointer.lastY = event.clientY;
+        this.panOrbit(dx, dy);
       }
     });
     canvas.addEventListener('pointerup', (event: PointerEvent) => {
@@ -667,6 +694,9 @@ export class PoseViewer {
         orbitPointer.pointerId = null;
         orbitPointer.active = false;
       }
+    });
+    canvas.addEventListener('contextmenu', (event: MouseEvent) => {
+      event.preventDefault();
     });
     canvas.addEventListener(
       'wheel',
