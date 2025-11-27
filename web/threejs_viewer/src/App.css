@@ -125,3 +125,38 @@ input[type="number"] {
   pointer-events: none;
   z-index: 15;
 }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  backdrop-filter: blur(3px);
+}
+
+.modal {
+  width: min(400px, 90vw);
+  background: #141414;
+  border: 1px solid #333;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  padding: 16px;
+}
+
+.modal-title {
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin-bottom: 8px;
+}
+
+.modal-body {
+  margin-bottom: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+}

@@ -31,7 +31,7 @@ export class VideoExporter {
 # Run this script to generate the video
 # Requires ffmpeg to be installed
 
-ffmpeg -framerate ${fps} -i frames/frame%04d.png -c:v libx264 -pix_fmt yuv420p output.mp4
+ffmpeg -y -framerate ${fps} -i frames/frame%04d.png -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -pix_fmt yuv420p output.mp4
 echo "Video generated: output.mp4"
 `
         zip.file('render.sh', scriptContent, { unixPermissions: '755' })

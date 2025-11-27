@@ -19,6 +19,8 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [depthGain, setDepthGain] = useState(1)
+  const [exportThickness, setExportThickness] = useState('')
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [editingEnabled, setEditingEnabled] = useState(false)
   const [selectionInfo, setSelectionInfo] = useState('Editing disabled.')
   const [hasSelection, setHasSelection] = useState(false)
@@ -144,8 +146,10 @@ function App() {
     setDepthGain(1)
   }
 
-  const handleExport = async () => {
+  const runExport = async () => {
     if (!viewerRef.current || !frameInfo.total) return
+    const parsedThickness = parseFloat(exportThickness)
+    const stickWidth = Number.isFinite(parsedThickness) && parsedThickness > 0 ? parsedThickness : undefined
 
     const wasPlaying = isPlaying
     if (wasPlaying) viewerRef.current.togglePlayback()
@@ -161,7 +165,7 @@ function App() {
         viewerRef.current.seekFrame(i)
         // Wait a tiny bit for render
         await new Promise(r => setTimeout(r, 20))
-        const blob = await viewerRef.current.captureFrame()
+        const blob = await viewerRef.current.captureKijaiFrame(i, undefined, undefined, stickWidth)
         if (blob) frames.push(blob)
         setStatusText(`Capturing frame ${i + 1}/${total}`)
       }
@@ -186,6 +190,19 @@ function App() {
     } finally {
       if (wasPlaying) viewerRef.current.togglePlayback()
     }
+  }
+
+  const handleExport = () => {
+    setExportDialogOpen(true)
+  }
+
+  const handleConfirmExport = async () => {
+    setExportDialogOpen(false)
+    await runExport()
+  }
+
+  const handleCancelExport = () => {
+    setExportDialogOpen(false)
   }
 
   const handleExportJSON = () => {
@@ -256,6 +273,32 @@ function App() {
         onPropagateForwards={() => viewerRef.current?.propagateCurrentFrameForwards()}
         currentFrameHasKeyframe={currentFrameHasKeyframe}
       />
+
+      {exportDialogOpen && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="modal-title">Export Video</div>
+            <div className="modal-body">
+              <p style={{ marginBottom: 8, color: '#aaa' }}>
+                Set pose line thickness in pixels. Leave blank for auto sizing.
+              </p>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={exportThickness}
+                onChange={(e) => setExportThickness(e.target.value)}
+                placeholder="Auto"
+                style={{ width: '100%', padding: '8px', fontSize: '1rem' }}
+              />
+            </div>
+            <div className="modal-actions">
+              <button onClick={handleCancelExport}>Cancel</button>
+              <button onClick={handleConfirmExport} style={{ marginLeft: 8 }}>OK</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

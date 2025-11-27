@@ -5,13 +5,10 @@ Usage:
     python rtmw3d_export_json.py --video input.mp4 --output exports/poses.json
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
@@ -20,12 +17,7 @@ from rtmlib import Wholebody3d
 from rtmw_shared import MODELS_DIR, center_and_scale, download_if_url
 
 
-def normalize_pose(
-    points: np.ndarray,
-    scores: np.ndarray | None,
-    min_score: float,
-    z_gain: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, float | None]:
+def normalize_pose(points, scores, min_score, z_gain):
     """Center/scale the pose and boost depth according to z_gain (0=auto)."""
     if scores is None:
         valid = np.ones(points.shape[0], dtype=bool)
@@ -43,12 +35,7 @@ def normalize_pose(
     return centered, valid, center, scale
 
 
-def format_person(
-    points: np.ndarray,
-    scores: np.ndarray | None,
-    min_score: float,
-    z_gain: float,
-) -> dict[str, Any]:
+def format_person(points, scores, min_score, z_gain):
     """Convert a person's 133x3 pose into a JSON-friendly dictionary."""
     normalized, valid, center, scale = normalize_pose(points, scores, min_score, z_gain)
     data = {
@@ -64,10 +51,10 @@ def format_person(
     return data
 
 
-def _unpack_outputs(outputs: object) -> tuple[np.ndarray | None, np.ndarray | None]:
+def _unpack_outputs(outputs):
     """Return (kpts3d, scores) regardless of tuple/dict layout."""
-    kpts3d: np.ndarray | None = None
-    scores: np.ndarray | None = None
+    kpts3d = None
+    scores = None
 
     if isinstance(outputs, dict):
         for key in ("kpts3d", "keypoints_3d", "keypoints3d", "xyz"):
@@ -112,17 +99,17 @@ def _unpack_outputs(outputs: object) -> tuple[np.ndarray | None, np.ndarray | No
 
 
 def run(
-    video_path: str,
-    model_path_or_url: str,
-    device: str,
-    backend: str,
-    step: int,
-    max_edge: int,
-    min_score: float,
-    max_frames: int,
-    output_path: Path,
-    z_gain: float,
-) -> None:
+    video_path,              # str: path to the input video file
+    model_path_or_url,       # str: local file path or URL to the model
+    device,                  # str: which device to use ("cpu" or "cuda")
+    backend,                 # str: inference backend ("onnxruntime", etc.)
+    step,                    # int: process every Nth frame
+    max_edge,                # int: max video frame edge length (pixels)
+    min_score,               # float: minimum confidence score
+    max_frames,              # int: maximum number of frames to export
+    output_path,             # Path: output JSON path
+    z_gain,                  # float: depth amplification factor
+):
     """Extract RTMW3D poses and dump them into a JSON time series."""
     model_path = download_if_url(model_path_or_url, MODELS_DIR)
     pose_input_size = (288, 384)
@@ -142,7 +129,8 @@ def run(
     raw_fps = cap.get(cv2.CAP_PROP_FPS)
     video_fps = raw_fps if raw_fps and raw_fps > 1e-4 else 30.0
 
-    frames: list[dict[str, Any]] = []
+    frames = []
+    last_frame_shape = None
     frame_idx = 0
     print("[export] Starting inference...")
     try:
@@ -162,6 +150,7 @@ def run(
                     new_h = max(1, int(round(frame_h * scale)))
                     frame = cv2.resize(frame, (new_w, new_h))
 
+            last_frame_shape = frame.shape[:2]
             outputs = estimator(frame)
             kpts3d, scores = _unpack_outputs(outputs)
 
@@ -199,8 +188,8 @@ def run(
         "sample_stride": step,
         "effective_fps": video_fps / step if step > 0 else video_fps,
         "max_edge": max_edge,
-        "width": frame.shape[1] if 'frame' in locals() else 0,
-        "height": frame.shape[0] if 'frame' in locals() else 0,
+        "width": last_frame_shape[1] if last_frame_shape else 0,
+        "height": last_frame_shape[0] if last_frame_shape else 0,
         "min_score": min_score,
         "frame_count": len(frames),
         "z_gain": z_gain,
@@ -211,7 +200,7 @@ def run(
     print(f"[export] wrote {len(frames)} frames to {output_path}")
 
 
-def build_argparser() -> argparse.ArgumentParser:
+def build_argparser():
     parser = argparse.ArgumentParser(description="Export RTMW3D poses to JSON for the Three.js viewer")
     parser.add_argument("--video", required=True, help="Path to an input video file")
     parser.add_argument(
@@ -257,7 +246,7 @@ def build_argparser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main():
     parser = build_argparser()
     args = parser.parse_args()
     output = Path(args.output)

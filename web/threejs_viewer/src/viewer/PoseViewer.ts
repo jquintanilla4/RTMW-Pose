@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { renderKijaiPoseFrame } from '../utils/KijaiPoseRenderer';
 
 const COLORS = {
   body: [0.1, 0.8, 0.95],
@@ -30,7 +31,7 @@ const EDGE_COLOR_PER_EDGE: Array<[number, number, number]> = [];
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
 
-type PosePoint = [number, number, number];
+export type PosePoint = [number, number, number];
 
 type JointEdit = {
   personIndex: number;
@@ -1261,6 +1262,26 @@ export class PoseViewer {
       this.renderer.domElement.toBlob((blob) => {
         resolve(blob);
       }, 'image/png');
+    });
+  }
+
+  async captureKijaiFrame(frameIndex = this.displayedFrame, width?: number, height?: number, stickWidth?: number): Promise<Blob | null> {
+    const idx = frameIndex >= 0 ? frameIndex : this.displayedFrame;
+    const frame = idx >= 0 ? this.frames[idx] : null;
+    if (!frame) return null;
+    const metaWidth = typeof this.meta?.width === 'number' && this.meta.width > 0 ? this.meta.width : null;
+    const metaHeight = typeof this.meta?.height === 'number' && this.meta.height > 0 ? this.meta.height : null;
+    const targetWidth = width || metaWidth || metaHeight || 1024;
+    const targetHeight = height || metaHeight || metaWidth || targetWidth;
+    const bodyStickWidth = stickWidth && stickWidth > 0 ? stickWidth : undefined;
+    const handStickWidth = bodyStickWidth ? Math.max(1, bodyStickWidth * 0.65) : undefined;
+    return renderKijaiPoseFrame(frame, {
+      width: targetWidth,
+      height: targetHeight,
+      drawHands: true,
+      drawHead: true,
+      bodyStickWidth,
+      handStickWidth,
     });
   }
 

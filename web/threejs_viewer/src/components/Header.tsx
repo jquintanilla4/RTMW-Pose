@@ -8,7 +8,13 @@ interface HeaderProps {
     fileName?: string
 }
 
-export function Header({ onFileLoad, onExport, onExportJSON, statusText, fileName }: HeaderProps) {
+export function Header({
+    onFileLoad,
+    onExport,
+    onExportJSON,
+    statusText,
+    fileName,
+}: HeaderProps) {
     const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0]
         if (file) {
