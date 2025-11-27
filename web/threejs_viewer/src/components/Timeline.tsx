@@ -8,9 +8,11 @@ interface TimelineProps {
     onPlayBackward?: () => void
     onSeek: (frame: number) => void
     keyframes: number[]
+    cameraKeyframes?: number[]
     onPropagateBackwards?: () => void
     onPropagateForwards?: () => void
     currentFrameHasKeyframe?: boolean
+    currentFrameHasCameraKeyframe?: boolean
 }
 
 export function Timeline({
@@ -21,13 +23,16 @@ export function Timeline({
     onPlayBackward,
     onSeek,
     keyframes,
+    cameraKeyframes = [],
     onPropagateBackwards,
     onPropagateForwards,
     currentFrameHasKeyframe = false,
+    currentFrameHasCameraKeyframe = false,
 }: TimelineProps) {
     const maxFrame = Math.max(0, totalFrames - 1)
     const progress = maxFrame > 0 ? (currentFrame / maxFrame) * 100 : 0
     const frameMarkers = maxFrame > 0 ? Array.from({ length: totalFrames }, (_, i) => i) : []
+    const positionForFrame = (frame: number) => (maxFrame > 0 ? (frame / maxFrame) * 100 : 0)
 
     return (
         <div className="bottom-panel">
@@ -111,6 +116,9 @@ export function Timeline({
                         }}
                     />
                     <span style={{ color: '#666' }}>/ {maxFrame}</span>
+                    {currentFrameHasCameraKeyframe && (
+                        <span style={{ color: 'var(--camera-keyframe-color)', paddingLeft: 4, fontSize: '0.9em' }}>▲</span>
+                    )}
                 </div>
             </div>
 
@@ -135,7 +143,7 @@ export function Timeline({
                             key={`frame-${frame}`}
                             style={{
                                 position: 'absolute',
-                                left: `${(frame / maxFrame) * 100}%`,
+                                left: `${positionForFrame(frame)}%`,
                                 top: 4,
                                 width: 1,
                                 height: 24,
@@ -153,11 +161,29 @@ export function Timeline({
                             key={frame}
                             style={{
                                 position: 'absolute',
-                                left: `${(frame / maxFrame) * 100}%`,
+                                left: `${positionForFrame(frame)}%`,
                                 top: 8,
                                 width: 4,
                                 height: 16,
                                 backgroundColor: 'var(--keyframe-color)',
+                                transform: 'translateX(-50%)',
+                                pointerEvents: 'none'
+                            }}
+                        />
+                    ))}
+
+                    {cameraKeyframes.map(frame => (
+                        <div
+                            key={`cam-${frame}`}
+                            style={{
+                                position: 'absolute',
+                                left: `${positionForFrame(frame)}%`,
+                                top: 2,
+                                width: 0,
+                                height: 0,
+                                borderLeft: '6px solid transparent',
+                                borderRight: '6px solid transparent',
+                                borderBottom: '10px solid var(--camera-keyframe-color)',
                                 transform: 'translateX(-50%)',
                                 pointerEvents: 'none'
                             }}

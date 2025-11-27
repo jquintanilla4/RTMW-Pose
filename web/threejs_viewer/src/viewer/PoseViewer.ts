@@ -22,12 +22,22 @@ const JOINT_HANDLE_GEOMETRY = new THREE.SphereGeometry(0.01, 12, 12);
 const SELECTED_HANDLE_COLOR = new THREE.Color(1, 1, 1);
 const HANDLE_DEFAULT_SCALE = 1;
 const HANDLE_SELECTED_SCALE = 1.5;
+const CAMERA_RIG_LAYER = 1;
 
 const EDGE_PAIRS: Array<[number, number]> = [];
 const EDGE_COLOR_PER_EDGE: Array<[number, number, number]> = [];
 
+export type ViewMode = 'viewport' | 'camera';
+export type CameraLensPreset = '18mm' | '24mm' | '35mm' | '50mm' | '85mm' | 'custom';
 
-
+const CAMERA_LENS_FOV: Record<CameraLensPreset, number> = {
+  '18mm': 90,
+  '24mm': 73,
+  '35mm': 54,
+  '50mm': 40,
+  '85mm': 24,
+  custom: 45,
+};
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
 
@@ -68,6 +78,9 @@ export interface PoseViewerCallbacks {
   onPlaybackStateChange?: (playing: boolean) => void;
   onSelectionInfoChange?: (info: { text: string; hasSelection: boolean }) => void;
   onKeyframeStateChange?: (info: { framesWithKeyframes: number[]; hasKeyframeAtCurrent: boolean }) => void;
+  onCameraKeyframeStateChange?: (info: { framesWithKeyframes: number[]; hasKeyframeAtCurrent: boolean }) => void;
+  onCameraSettingsChange?: (info: { fov: number; lens: CameraLensPreset; locked: boolean; viewMode: ViewMode }) => void;
+  onTransformTargetChange?: (info: { target: 'camera' | 'joints' | 'none' }) => void;
 }
 
 export interface PoseViewerOptions {
@@ -107,6 +120,13 @@ interface TransformSession {
   startMatrix: THREE.Matrix4;
   inverseStartMatrix: THREE.Matrix4;
   handles: TransformSessionEntry[];
+}
+
+interface CameraSnapshot {
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  fov: number;
+  lens: CameraLensPreset;
 }
 
 function addEdges(edgeList: Array<[number, number]>, colorKey: keyof typeof COLORS) {
@@ -293,9 +313,17 @@ export class PoseViewer {
   private callbacks: PoseViewerCallbacks;
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
-  private camera: THREE.PerspectiveCamera;
+  private viewportCamera: THREE.PerspectiveCamera;
+  private shotCamera: THREE.PerspectiveCamera;
+  private viewMode: ViewMode = 'viewport';
   private orbitTarget = new THREE.Vector3(0, 0.1, 0);
   private orbitState = { theta: Math.PI, phi: 1.0, radius: 2.6 };
+  private cameraOrbitState = { theta: Math.PI, phi: 1.0, radius: 2.6 };
+  private cameraLocked = false;
+  private cameraLens: CameraLensPreset = 'custom';
+  private shotRig: THREE.Group;
+  private cameraKeyframes = new Map<number, CameraSnapshot>();
+  private currentCameraState: CameraSnapshot | null = null;
   private ambient: THREE.AmbientLight;
   private dir: THREE.DirectionalLight;
   private grid: THREE.GridHelper;
@@ -314,6 +342,9 @@ export class PoseViewer {
     selectionProxy: new THREE.Object3D(),
   };
   private transformControls: TransformControls;
+  private transformTarget: 'camera' | 'joints' | null = null;
+  private currentTransformMode: TransformMode = 'translate';
+  private controlsDragging = false;
   private selectionPointerState = {
     pointerId: null as number | null,
     startX: 0,
@@ -323,6 +354,12 @@ export class PoseViewer {
     moved: false,
     marqueeActive: false,
     suppressClick: false,
+  };
+  private cameraPointerState = {
+    pointerId: null as number | null,
+    startX: 0,
+    startY: 0,
+    moved: false,
   };
   private marqueeElement: HTMLDivElement;
   private frames: PoseFrame[] = [];
@@ -342,6 +379,8 @@ export class PoseViewer {
   constructor(options: PoseViewerOptions) {
     this.container = options.container;
     this.callbacks = options.callbacks ?? {};
+    // Raycaster must see both default layer and the camera rig layer for selection.
+    this.raycaster.layers.enable(CAMERA_RIG_LAYER);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -355,8 +394,15 @@ export class PoseViewer {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0.03, 0.03, 0.03);
 
-    this.camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
-    this.updateOrbitCamera();
+    this.viewportCamera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+    this.shotCamera = new THREE.PerspectiveCamera(CAMERA_LENS_FOV[this.cameraLens], 1, 0.01, 100);
+    this.updateOrbitCamera(this.orbitState, this.viewportCamera);
+    this.updateOrbitCamera(this.cameraOrbitState, this.shotCamera);
+    this.currentCameraState = this.captureCameraSnapshot(this.shotCamera);
+
+    this.shotRig = this.createCameraRig();
+    this.scene.add(this.shotRig);
+    this.updateShotRigVisibility();
 
 
     this.ambient = new THREE.AmbientLight(0xffffff, 0.6);
@@ -378,27 +424,36 @@ export class PoseViewer {
     const debugBox = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshBasicMaterial({ color: 0xff0000 }));
     this.editingState.selectionProxy.add(debugBox);
 
-    this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
+    this.transformControls = new TransformControls(this.getActiveCamera(), this.renderer.domElement);
     this.transformControls.visible = false;
     this.transformControls.setSize(1.0);
     this.scene.add(this.transformControls.getHelper());
+    this.enforceTransformModeForTarget(this.currentTransformMode);
 
     this.transformControls.addEventListener('dragging-changed', (event) => {
       const value = (event as { value?: unknown }).value;
-      this.editingState.transformDragging = Boolean(value);
+      const active = Boolean(value);
+      this.editingState.transformDragging = active;
+      this.controlsDragging = active;
     });
     this.transformControls.addEventListener('mouseDown', () => {
-      if (this.editingState.enabled && this.editingState.selectedHandles.length) {
+      if (this.transformTarget === 'camera') {
+        this.applyCameraRigTransform();
+      } else if (this.editingState.enabled && this.editingState.selectedHandles.length) {
         this.beginTransformSession();
       }
     });
     this.transformControls.addEventListener('objectChange', () => {
-      if (this.editingState.transformSession) {
+      if (this.transformTarget === 'camera') {
+        this.applyCameraRigTransform();
+      } else if (this.editingState.transformSession) {
         this.applyTransformSession();
       }
     });
     this.transformControls.addEventListener('mouseUp', () => {
-      if (this.editingState.transformSession) {
+      if (this.transformTarget === 'camera') {
+        this.applyCameraRigTransform();
+      } else if (this.editingState.transformSession) {
         const session = this.editingState.transformSession;
         this.editingState.transformSession = null;
         this.finalizeTransformSession(session);
@@ -414,6 +469,10 @@ export class PoseViewer {
     this.setupOrbitInput();
     this.setupSelectionInput();
 
+    this.updateCameraRigFromShotCamera();
+    this.emitCameraSettings();
+    this.emitCameraKeyframeState();
+
     this.animate();
   }
 
@@ -424,6 +483,11 @@ export class PoseViewer {
     window.removeEventListener('resize', this.handleWindowResize);
     window.removeEventListener('resize', this.handleWindowResize);
     const canvas = this.renderer.domElement;
+    canvas.removeEventListener('pointerdown', this.handleCameraPointerDown);
+    canvas.removeEventListener('pointermove', this.handleCameraPointerMove);
+    canvas.removeEventListener('pointerup', this.handleCameraPointerUp);
+    canvas.removeEventListener('pointerleave', this.handleCameraPointerCancel);
+    canvas.removeEventListener('pointercancel', this.handleCameraPointerCancel);
     canvas.removeEventListener('pointerdown', this.handleSelectionPointerDown);
     canvas.removeEventListener('pointermove', this.handleSelectionPointerMove);
     canvas.removeEventListener('pointerup', this.handleSelectionPointerUp);
@@ -444,25 +508,114 @@ export class PoseViewer {
   private resizeRenderer() {
     const width = this.container.clientWidth || this.container.offsetWidth || 640;
     const height = Math.max(200, (window.innerHeight || 720) - 70);
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
+    this.viewportCamera.aspect = width / height;
+    this.viewportCamera.updateProjectionMatrix();
+    this.shotCamera.aspect = width / height;
+    this.shotCamera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
   }
 
 
 
-  private updateOrbitCamera() {
+  private updateOrbitCamera(state = this.orbitState, camera = this.viewportCamera) {
     const minPhi = 0.05;
     const maxPhi = Math.PI - 0.05;
-    this.orbitState.phi = Math.min(maxPhi, Math.max(minPhi, this.orbitState.phi));
-    this.orbitState.radius = Math.min(10, Math.max(0.4, this.orbitState.radius));
-    const sinPhi = Math.sin(this.orbitState.phi);
-    this.camera.position.set(
-      this.orbitTarget.x + this.orbitState.radius * sinPhi * Math.sin(this.orbitState.theta),
-      this.orbitTarget.y + this.orbitState.radius * Math.cos(this.orbitState.phi),
-      this.orbitTarget.z + this.orbitState.radius * sinPhi * Math.cos(this.orbitState.theta)
+    state.phi = Math.min(maxPhi, Math.max(minPhi, state.phi));
+    state.radius = Math.min(10, Math.max(0.4, state.radius));
+    const sinPhi = Math.sin(state.phi);
+    camera.position.set(
+      this.orbitTarget.x + state.radius * sinPhi * Math.sin(state.theta),
+      this.orbitTarget.y + state.radius * Math.cos(state.phi),
+      this.orbitTarget.z + state.radius * sinPhi * Math.cos(state.theta)
     );
-    this.camera.lookAt(this.orbitTarget);
+    camera.lookAt(this.orbitTarget);
+    if (camera === this.shotCamera) {
+      this.afterShotCameraChanged(false);
+    }
+  }
+
+  private getActiveCamera() {
+    return this.viewMode === 'camera' ? this.shotCamera : this.viewportCamera;
+  }
+
+  private getActiveOrbitState() {
+    return this.viewMode === 'camera' ? this.cameraOrbitState : this.orbitState;
+  }
+
+  private deriveLensFromFov(fov: number): CameraLensPreset {
+    let closest: CameraLensPreset = 'custom';
+    let smallest = Number.POSITIVE_INFINITY;
+    (Object.keys(CAMERA_LENS_FOV) as CameraLensPreset[]).forEach((lens) => {
+      const diff = Math.abs(CAMERA_LENS_FOV[lens] - fov);
+      if (diff < smallest) {
+        smallest = diff;
+        closest = lens;
+      }
+    });
+    return smallest < 1 ? closest : 'custom';
+  }
+
+  private captureCameraSnapshot(camera: THREE.PerspectiveCamera, lens: CameraLensPreset = this.cameraLens): CameraSnapshot {
+    const resolvedLens = lens ?? this.cameraLens;
+    return {
+      position: camera.position.clone(),
+      quaternion: camera.quaternion.clone(),
+      fov: camera.fov,
+      lens: resolvedLens,
+    };
+  }
+
+  private syncOrbitStateFromCamera(camera: THREE.PerspectiveCamera, state = this.cameraOrbitState) {
+    const offset = this.tempVector3.copy(camera.position).sub(this.orbitTarget);
+    state.radius = Math.max(1e-3, offset.length());
+    state.theta = Math.atan2(offset.x, offset.z);
+    const normalizedY = Math.max(-1, Math.min(1, offset.y / state.radius));
+    state.phi = Math.acos(normalizedY);
+  }
+
+  private createCameraRig() {
+    const rig = new THREE.Group();
+    const bodyGeom = new THREE.BoxGeometry(0.06, 0.04, 0.08);
+    const body = new THREE.Mesh(bodyGeom, new THREE.MeshBasicMaterial({ color: 0x6ab0ff, transparent: true, opacity: 0.9 }));
+    body.position.z = -0.04;
+    rig.add(body);
+
+    const coneGeom = new THREE.ConeGeometry(0.08, 0.16, 4, 1);
+    const helper = new THREE.LineSegments(new THREE.WireframeGeometry(coneGeom), new THREE.LineBasicMaterial({ color: 0xffc857 }));
+    helper.rotateX(Math.PI / 2);
+    helper.position.z = -0.1;
+    rig.add(helper);
+
+    rig.traverse((obj) => obj.layers.set(CAMERA_RIG_LAYER));
+    rig.visible = true;
+    return rig;
+  }
+
+  private updateCameraRigFromShotCamera() {
+    if (!this.shotRig) return;
+    this.shotRig.position.copy(this.shotCamera.position);
+    this.shotRig.quaternion.copy(this.shotCamera.quaternion);
+    const dist = Math.max(0.2, this.shotCamera.position.distanceTo(this.orbitTarget));
+    const scale = Math.min(1.2, Math.max(0.2, dist * 0.12));
+    this.shotRig.scale.setScalar(scale);
+    this.updateShotRigVisibility();
+  }
+
+  private updateShotRigVisibility() {
+    if (!this.shotRig) return;
+    this.shotRig.visible = true;
+    this.shotRig.layers.set(CAMERA_RIG_LAYER);
+    this.viewportCamera.layers.enable(CAMERA_RIG_LAYER);
+    this.shotCamera.layers.disable(CAMERA_RIG_LAYER);
+  }
+
+  private afterShotCameraChanged(emitSettings = true) {
+    this.currentCameraState = this.captureCameraSnapshot(this.shotCamera, this.cameraLens);
+    this.syncOrbitStateFromCamera(this.shotCamera, this.cameraOrbitState);
+    this.updateCameraRigFromShotCamera();
+    if (emitSettings) {
+      this.emitCameraSettings();
+    }
   }
 
   private setupOrbitInput() {
@@ -471,14 +624,16 @@ export class PoseViewer {
 
     canvas.addEventListener('pointerdown', (event: PointerEvent) => {
       if (event.button !== 0) return;
+      if (this.viewMode === 'camera' && this.cameraLocked) return;
       orbitPointer.pointerId = event.pointerId;
       orbitPointer.lastX = event.clientX;
       orbitPointer.lastY = event.clientY;
-      orbitPointer.active = !this.editingState.enabled;
+      orbitPointer.active = this.viewMode === 'camera' ? true : !this.editingState.enabled;
       canvas.setPointerCapture(event.pointerId);
     });
     canvas.addEventListener('pointermove', (event: PointerEvent) => {
       if (orbitPointer.pointerId !== event.pointerId) return;
+      if (this.viewMode === 'camera' && this.cameraLocked) return;
       if (this.editingState.transformDragging) return;
       if (this.editingState.enabled && this.selectionPointerState.pointerId !== null) return;
       const dx = event.clientX - orbitPointer.lastX;
@@ -492,9 +647,13 @@ export class PoseViewer {
       }
       orbitPointer.lastX = event.clientX;
       orbitPointer.lastY = event.clientY;
-      this.orbitState.theta -= dx * 0.005;
-      this.orbitState.phi -= dy * 0.005;
-      this.updateOrbitCamera();
+      const orbitState = this.getActiveOrbitState();
+      orbitState.theta -= dx * 0.005;
+      orbitState.phi -= dy * 0.005;
+      this.updateOrbitCamera(orbitState, this.getActiveCamera());
+      if (this.viewMode === 'camera') {
+        this.afterShotCameraChanged();
+      }
     });
     canvas.addEventListener('pointerup', (event: PointerEvent) => {
       if (orbitPointer.pointerId === event.pointerId) {
@@ -513,9 +672,14 @@ export class PoseViewer {
       'wheel',
       (event: WheelEvent) => {
         event.preventDefault();
+        if (this.viewMode === 'camera' && this.cameraLocked) return;
         const delta = event.deltaY > 0 ? 1.05 : 0.95;
-        this.orbitState.radius *= delta;
-        this.updateOrbitCamera();
+        const orbitState = this.getActiveOrbitState();
+        orbitState.radius *= delta;
+        this.updateOrbitCamera(orbitState, this.getActiveCamera());
+        if (this.viewMode === 'camera') {
+          this.afterShotCameraChanged();
+        }
       },
       { passive: false }
     );
@@ -523,12 +687,60 @@ export class PoseViewer {
 
   private setupSelectionInput() {
     const canvas = this.renderer.domElement;
+    canvas.addEventListener('pointerdown', this.handleCameraPointerDown);
+    canvas.addEventListener('pointermove', this.handleCameraPointerMove);
+    canvas.addEventListener('pointerup', this.handleCameraPointerUp);
+    canvas.addEventListener('pointerleave', this.handleCameraPointerCancel);
+    canvas.addEventListener('pointercancel', this.handleCameraPointerCancel);
     canvas.addEventListener('pointerdown', this.handleSelectionPointerDown);
     canvas.addEventListener('pointermove', this.handleSelectionPointerMove);
     canvas.addEventListener('pointerup', this.handleSelectionPointerUp);
     canvas.addEventListener('pointerleave', this.handleSelectionPointerCancel);
     canvas.addEventListener('pointercancel', this.handleSelectionPointerCancel);
   }
+
+  private handleCameraPointerDown = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey) return;
+    if (this.controlsDragging) return;
+    if (this.cameraLocked) return;
+    if (this.viewMode !== 'viewport') return;
+    this.cameraPointerState.pointerId = event.pointerId;
+    this.cameraPointerState.startX = event.clientX;
+    this.cameraPointerState.startY = event.clientY;
+    this.cameraPointerState.moved = false;
+  };
+
+  private handleCameraPointerMove = (event: PointerEvent) => {
+    if (this.cameraPointerState.pointerId !== event.pointerId) return;
+    const dx = event.clientX - this.cameraPointerState.startX;
+    const dy = event.clientY - this.cameraPointerState.startY;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      this.cameraPointerState.moved = true;
+    }
+  };
+
+  private handleCameraPointerUp = (event: PointerEvent) => {
+    if (event.button !== 0) return;
+    if (this.cameraPointerState.pointerId !== event.pointerId) return;
+    const moved = this.cameraPointerState.moved;
+    this.cameraPointerState.pointerId = null;
+    if (this.selectionPointerState.pointerId !== null) return;
+    if (this.controlsDragging) return;
+    if (moved) return;
+    if (this.selectCameraAtEvent(event)) return;
+    if (this.transformTarget === 'camera') {
+      this.clearCameraSelection();
+    }
+  };
+
+  private handleCameraPointerCancel = (event: PointerEvent) => {
+    if (this.cameraPointerState.pointerId !== null && event.pointerId !== this.cameraPointerState.pointerId) {
+      return;
+    }
+    this.cameraPointerState.pointerId = null;
+    this.cameraPointerState.moved = false;
+  };
 
   private handleSelectionPointerDown = (event: PointerEvent) => {
     if (!this.editingState.enabled || event.button !== 0) return;
@@ -640,12 +852,13 @@ export class PoseViewer {
     const maxY = Math.max(y1, y2);
     const rect = this.renderer.domElement.getBoundingClientRect();
     const selected: JointHandle[] = [];
+    const activeCamera = this.getActiveCamera();
     this.peopleObjects.forEach((obj) => {
       if (!obj.group.visible) return;
       obj.jointHandles.forEach((handle) => {
         if (!handle.visible) return;
         handle.getWorldPosition(this.tempVector3);
-        this.tempVector3.project(this.camera);
+        this.tempVector3.project(activeCamera);
         const screenX = (this.tempVector3.x * 0.5 + 0.5) * rect.width + rect.left;
         const screenY = (this.tempVector3.y * -0.5 + 0.5) * rect.height + rect.top;
         if (screenX >= minX && screenX <= maxX && screenY >= minY && screenY <= maxY) {
@@ -657,6 +870,7 @@ export class PoseViewer {
   }
 
   private applySelectionForHandles(handles: JointHandle[], additive: boolean) {
+    this.clearCameraSelection();
     const unique = Array.from(new Set(handles));
     if (!additive) {
       if (this.editingState.selectedHandles.length) {
@@ -685,6 +899,85 @@ export class PoseViewer {
     this.updateSelectionInfo();
   }
 
+  private enforceTransformModeForTarget(mode?: TransformMode) {
+    const desired = mode ?? this.currentTransformMode;
+    const resolved = this.transformTarget === 'camera' && desired === 'scale' ? 'translate' : desired;
+    this.currentTransformMode = resolved;
+    this.transformControls.setMode(resolved);
+  }
+
+  private setTransformTarget(target: 'camera' | 'joints' | null) {
+    let resolved: 'camera' | 'joints' | null = target;
+    if (resolved === 'joints' && (!this.editingState.enabled || !this.editingState.selectedHandles.length)) {
+      resolved = null;
+    }
+    if (this.transformTarget === resolved) {
+      this.enforceTransformModeForTarget();
+      return;
+    }
+    this.transformTarget = resolved;
+    if (resolved === 'camera') {
+      this.editingState.selectionProxy.visible = false;
+      this.transformControls.attach(this.shotRig);
+      this.transformControls.visible = true;
+      this.transformControls.enabled = true;
+    } else if (resolved === 'joints') {
+      if (this.editingState.selectionProxy.visible) {
+        this.transformControls.attach(this.editingState.selectionProxy);
+        this.transformControls.visible = true;
+        this.transformControls.enabled = true;
+      }
+    } else {
+      this.editingState.selectionProxy.visible = false;
+      this.transformControls.detach();
+      this.transformControls.visible = false;
+      this.transformControls.enabled = false;
+    }
+    this.callbacks.onTransformTargetChange?.({ target: resolved ?? 'none' });
+    this.updateSelectionInfo();
+    this.enforceTransformModeForTarget();
+  }
+
+  private clearCameraSelection() {
+    if (this.transformTarget === 'camera') {
+      this.setTransformTarget(null);
+    }
+  }
+
+  private clearJointSelection() {
+    if (this.editingState.selectedHandles.length) {
+      this.editingState.selectedHandles.forEach((handle) => this.setHandleSelected(handle, false));
+    }
+    this.editingState.selectedHandles = [];
+    this.editingState.transformSession = null;
+    this.editingState.selectionProxy.visible = false;
+  }
+
+  private selectCameraAtEvent(event: PointerEvent) {
+    if (this.viewMode !== 'viewport') return false;
+    if (this.cameraLocked) return false;
+    if (!this.shotRig || this.controlsDragging) return false;
+    if (event.metaKey || event.ctrlKey) return false;
+    this.prepareRayFromEvent(event);
+    const intersections = this.raycaster.intersectObject(this.shotRig, true);
+    if (!intersections.length) return false;
+    this.clearJointSelection();
+    this.setTransformTarget('camera');
+    return true;
+  }
+
+  private applyCameraRigTransform() {
+    if (this.cameraLocked) return;
+    if (!this.shotRig) return;
+    this.shotCamera.position.copy(this.shotRig.position);
+    this.shotCamera.quaternion.copy(this.shotRig.quaternion);
+    this.currentCameraState = this.captureCameraSnapshot(this.shotCamera, this.cameraLens);
+    this.syncOrbitStateFromCamera(this.shotCamera, this.cameraOrbitState);
+    const dist = Math.max(0.2, this.shotCamera.position.distanceTo(this.orbitTarget));
+    const scale = Math.min(1.2, Math.max(0.2, dist * 0.12));
+    this.shotRig.scale.setScalar(scale);
+    this.emitCameraSettings();
+  }
 
 
 
@@ -696,6 +989,147 @@ export class PoseViewer {
 
 
 
+
+  setViewMode(view: ViewMode) {
+    if (view !== 'viewport' && view !== 'camera') return;
+    if (this.viewMode === view) return;
+    this.viewMode = view;
+    this.transformControls.camera = this.getActiveCamera();
+    this.transformControls.updateMatrixWorld();
+    this.updateCameraRigFromShotCamera();
+    this.updateShotRigVisibility();
+    this.emitCameraSettings();
+  }
+
+  setCameraLocked(locked: boolean) {
+    this.cameraLocked = locked;
+    if (this.cameraLocked && this.transformTarget === 'camera') {
+      this.clearCameraSelection();
+    }
+    this.emitCameraSettings();
+  }
+
+  setCameraFov(fov: number, lens: CameraLensPreset = 'custom') {
+    if (this.cameraLocked) return;
+    const clamped = Math.min(110, Math.max(15, Number.isFinite(fov) ? fov : this.shotCamera.fov));
+    this.cameraLens = lens;
+    this.shotCamera.fov = clamped;
+    this.shotCamera.updateProjectionMatrix();
+    this.afterShotCameraChanged();
+  }
+
+  setCameraLens(lens: CameraLensPreset) {
+    if (lens === 'custom') {
+      this.setCameraFov(this.shotCamera.fov, 'custom');
+      return;
+    }
+    const targetFov = CAMERA_LENS_FOV[lens] ?? this.shotCamera.fov;
+    this.setCameraFov(targetFov, lens);
+  }
+
+  syncCameraFromViewport() {
+    if (this.cameraLocked) return;
+    this.shotCamera.position.copy(this.viewportCamera.position);
+    this.shotCamera.quaternion.copy(this.viewportCamera.quaternion);
+    this.shotCamera.fov = this.viewportCamera.fov;
+    this.shotCamera.updateProjectionMatrix();
+    this.cameraLens = this.deriveLensFromFov(this.shotCamera.fov);
+    this.afterShotCameraChanged();
+  }
+
+  addCameraKeyframe(frameIndex?: number) {
+    const target = typeof frameIndex === 'number' ? frameIndex : this.displayedFrame;
+    if (target == null || target < 0) return;
+    const snapshot = this.captureCameraSnapshot(this.shotCamera, this.cameraLens);
+    this.cameraKeyframes.set(target, snapshot);
+    this.emitCameraKeyframeState(target);
+  }
+
+  clearCameraKeyframe(frameIndex?: number) {
+    const target = typeof frameIndex === 'number' ? frameIndex : this.displayedFrame;
+    if (target == null || target < 0) return;
+    if (!this.cameraKeyframes.has(target)) return;
+    this.cameraKeyframes.delete(target);
+    if (this.displayedFrame === target) {
+      this.applyCameraForFrame(target);
+    } else {
+      this.emitCameraKeyframeState(target);
+    }
+  }
+
+  private cloneCameraSnapshot(snapshot?: CameraSnapshot | null): CameraSnapshot | null {
+    if (!snapshot) return null;
+    return {
+      position: snapshot.position.clone(),
+      quaternion: snapshot.quaternion.clone(),
+      fov: snapshot.fov,
+      lens: snapshot.lens,
+    };
+  }
+
+  private getCameraStateForFrame(frameIndex: number) {
+    if (this.cameraKeyframes.has(frameIndex)) {
+      return this.cloneCameraSnapshot(this.cameraKeyframes.get(frameIndex));
+    }
+    if (!this.cameraKeyframes.size) return this.cloneCameraSnapshot(this.currentCameraState);
+    const frames = Array.from(this.cameraKeyframes.keys()).sort((a, b) => a - b);
+    let prev = -1;
+    let next = -1;
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i];
+      if (frame < frameIndex) prev = frame;
+      if (frame > frameIndex) {
+        next = frame;
+        break;
+      }
+    }
+    if (prev < 0 && next < 0) return this.cloneCameraSnapshot(this.currentCameraState);
+    if (prev < 0) return this.cloneCameraSnapshot(this.cameraKeyframes.get(next));
+    if (next < 0) return this.cloneCameraSnapshot(this.cameraKeyframes.get(prev));
+    const a = this.cameraKeyframes.get(prev);
+    const b = this.cameraKeyframes.get(next);
+    if (!a || !b) return this.cloneCameraSnapshot(this.currentCameraState);
+    const t = (frameIndex - prev) / (next - prev);
+    return {
+      position: a.position.clone().lerp(b.position, t),
+      quaternion: a.quaternion.clone().slerp(b.quaternion, t),
+      fov: THREE.MathUtils.lerp(a.fov, b.fov, t),
+      lens: t < 0.5 ? a.lens : b.lens,
+    };
+  }
+
+  private applyCameraSnapshot(snapshot: CameraSnapshot | null, emitSettings = true) {
+    const target = snapshot || this.currentCameraState || this.captureCameraSnapshot(this.shotCamera, this.cameraLens);
+    if (!target) return;
+    this.shotCamera.position.copy(target.position);
+    this.shotCamera.quaternion.copy(target.quaternion);
+    this.shotCamera.fov = target.fov;
+    this.shotCamera.updateProjectionMatrix();
+    this.cameraLens = target.lens ?? this.deriveLensFromFov(target.fov);
+    this.afterShotCameraChanged(emitSettings);
+  }
+
+  private applyCameraForFrame(frameIndex: number) {
+    const snapshot = this.getCameraStateForFrame(frameIndex);
+    this.applyCameraSnapshot(snapshot, false);
+    this.emitCameraSettings();
+    this.emitCameraKeyframeState(frameIndex);
+  }
+
+  private emitCameraKeyframeState(frameIndex = this.displayedFrame) {
+    const framesWithKeyframes = Array.from(this.cameraKeyframes.keys()).sort((a, b) => a - b);
+    const hasKeyframeAtCurrent = frameIndex >= 0 ? this.cameraKeyframes.has(frameIndex) : false;
+    this.callbacks.onCameraKeyframeStateChange?.({ framesWithKeyframes, hasKeyframeAtCurrent });
+  }
+
+  private emitCameraSettings() {
+    this.callbacks.onCameraSettingsChange?.({
+      fov: this.shotCamera.fov,
+      lens: this.cameraLens,
+      locked: this.cameraLocked,
+      viewMode: this.viewMode,
+    });
+  }
 
   private animate = () => {
     this.animationHandle = requestAnimationFrame(this.animate);
@@ -722,7 +1156,7 @@ export class PoseViewer {
       }
     }
     this.scene.add(this.transformControls.getHelper());
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(this.scene, this.getActiveCamera());
     if (this.editingState.selectedHandles.length > 0 && Math.random() < 0.01) {
       console.log('TransformControls:', this.transformControls);
     }
@@ -863,20 +1297,21 @@ export class PoseViewer {
 
   clearSelection() {
 
-    if (this.editingState.selectedHandles.length) {
-      this.editingState.selectedHandles.forEach((handle) => this.setHandleSelected(handle, false));
-    }
-    this.editingState.selectedHandles = [];
-    this.editingState.transformSession = null;
-    this.editingState.selectionProxy.visible = false;
-    this.transformControls.visible = false;
-    this.transformControls.enabled = false;
-    this.transformControls.detach();
+    this.clearJointSelection();
+    this.clearCameraSelection();
+    this.setTransformTarget(null);
     this.updateSelectionInfo();
   }
 
   private updateSelectionInfo() {
     if (!this.callbacks.onSelectionInfoChange) return;
+    if (this.transformTarget === 'camera') {
+      this.callbacks.onSelectionInfoChange({
+        text: 'Camera selected. Use Move or Rotate. Scale is disabled.',
+        hasSelection: true,
+      });
+      return;
+    }
     if (!this.editingState.enabled) {
       this.callbacks.onSelectionInfoChange({ text: 'Editing disabled.', hasSelection: false });
       return;
@@ -898,10 +1333,10 @@ export class PoseViewer {
 
   private refreshSelectionProxyFromHandles() {
     if (!this.editingState.selectedHandles.length) {
-      console.log('refreshSelectionProxyFromHandles: no selection');
       this.editingState.selectionProxy.visible = false;
-      this.transformControls.visible = false;
-      this.transformControls.detach();
+      if (this.transformTarget === 'joints') {
+        this.setTransformTarget(null);
+      }
       return;
     }
     const centroid = new THREE.Vector3();
@@ -911,10 +1346,7 @@ export class PoseViewer {
     this.editingState.selectionProxy.quaternion.identity();
     this.editingState.selectionProxy.scale.set(1, 1, 1);
     this.editingState.selectionProxy.visible = true;
-    this.transformControls.visible = true;
-    this.transformControls.enabled = true;
-    this.transformControls.attach(this.editingState.selectionProxy);
-    console.log('refreshSelectionProxyFromHandles: attached', this.editingState.selectionProxy.position);
+    this.setTransformTarget('joints');
   }
 
   private pruneSelectionAfterFrame() {
@@ -1081,27 +1513,23 @@ export class PoseViewer {
     if (this.editingState.enabled === enabled) return;
     this.editingState.enabled = enabled;
     if (!enabled) {
-      this.clearSelection();
+      const preserveCamera = this.transformTarget === 'camera';
+      this.clearJointSelection();
+      this.setTransformTarget(preserveCamera ? 'camera' : null);
     } else {
       if (this.isPlaying) {
         this.setPlaying(false);
       }
+      if (this.editingState.selectedHandles.length) {
+        this.setTransformTarget('joints');
+      }
     }
     this.updateJointHandleVisibility();
     this.updateSelectionInfo();
-    if (this.editingState.enabled) {
-      if (this.editingState.selectedHandles.length > 0) {
-        this.transformControls.visible = true;
-        this.transformControls.enabled = true;
-      }
-    } else {
-      this.transformControls.visible = false;
-      this.transformControls.enabled = false;
-    }
   }
 
   setTransformMode(mode: TransformMode) {
-    this.transformControls.setMode(mode);
+    this.enforceTransformModeForTarget(mode);
   }
 
   setSpeed(value: number) {
@@ -1134,7 +1562,7 @@ export class PoseViewer {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-    this.raycaster.setFromCamera(this.pointerNdc, this.camera);
+    this.raycaster.setFromCamera(this.pointerNdc, this.getActiveCamera());
   }
 
   private selectJointAtEvent(event: PointerEvent) {
@@ -1174,8 +1602,9 @@ export class PoseViewer {
       this.pruneSelectionAfterFrame();
       this.refreshSelectionProxyFromHandles();
     }
-    this.callbacks.onFrameUpdate?.({ index, total: this.frames.length, personCount: people.length });
     this.displayedFrame = index;
+    this.applyCameraForFrame(index);
+    this.callbacks.onFrameUpdate?.({ index, total: this.frames.length, personCount: people.length });
     this.emitKeyframeState();
   }
 
@@ -1186,6 +1615,8 @@ export class PoseViewer {
       this.baseFrames = clonePoseFrames(parsedFrames);
       this.frames = clonePoseFrames(parsedFrames);
       this.frameKeyframes.clear();
+      this.cameraKeyframes.clear();
+      this.cameraLocked = false;
       this.meta = payload.meta || {};
       this.effectiveFps = this.meta.effective_fps || this.meta.video_fps || 30;
       this.depthGain = 1;
@@ -1204,6 +1635,8 @@ export class PoseViewer {
       } else {
         this.setPlaying(false);
         this.emitKeyframeState();
+        this.emitCameraKeyframeState();
+        this.emitCameraSettings();
       }
     } catch (error) {
       console.error(error);
@@ -1258,7 +1691,7 @@ export class PoseViewer {
 
   async captureFrame(): Promise<Blob | null> {
     return new Promise((resolve) => {
-      this.renderer.render(this.scene, this.camera);
+      this.renderer.render(this.scene, this.getActiveCamera());
       this.renderer.domElement.toBlob((blob) => {
         resolve(blob);
       }, 'image/png');

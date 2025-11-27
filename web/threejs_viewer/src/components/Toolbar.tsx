@@ -5,9 +5,10 @@ interface ToolbarProps {
     activeMode: TransformMode
     onModeChange: (mode: TransformMode) => void
     enabled: boolean
+    scaleDisabled?: boolean
 }
 
-export function Toolbar({ activeMode, onModeChange, enabled }: ToolbarProps) {
+export function Toolbar({ activeMode, onModeChange, enabled, scaleDisabled = false }: ToolbarProps) {
     if (!enabled) return null
 
     return (
@@ -30,6 +31,7 @@ export function Toolbar({ activeMode, onModeChange, enabled }: ToolbarProps) {
                 className={`tool-btn ${activeMode === 'scale' ? 'active' : ''}`}
                 onClick={() => onModeChange('scale')}
                 title="Scale (S)"
+                disabled={scaleDisabled}
             >
                 <ScaleIcon />
             </button>

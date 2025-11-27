@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { PoseViewer } from './viewer/PoseViewer'
-import type { PoseViewerCallbacks, TransformMode } from './viewer/PoseViewer'
+import type { CameraLensPreset, PoseViewerCallbacks, TransformMode, ViewMode } from './viewer/PoseViewer'
 import { Header } from './components/Header'
 import { Toolbar } from './components/Toolbar'
 import { PropertiesPanel } from './components/PropertiesPanel'
 import { Timeline } from './components/Timeline'
 import { VideoExporter } from './utils/VideoExporter'
+import { AspectRatioOverlay } from './components/AspectRatioOverlay'
+import type { AspectRatioOption } from './components/AspectRatioOverlay'
 
 function App() {
   const viewerContainerRef = useRef<HTMLDivElement | null>(null)
@@ -25,10 +27,21 @@ function App() {
   const [selectionInfo, setSelectionInfo] = useState('Editing disabled.')
   const [hasSelection, setHasSelection] = useState(false)
   const [transformMode, setTransformMode] = useState<TransformMode>('translate')
+  const [transformTarget, setTransformTarget] = useState<'camera' | 'joints' | 'none'>('none')
   const [keyframeFrames, setKeyframeFrames] = useState<number[]>([])
   const [currentFrameHasKeyframe, setCurrentFrameHasKeyframe] = useState(false)
+  const [viewMode, setViewMode] = useState<ViewMode>('viewport')
+  const [cameraLocked, setCameraLocked] = useState(false)
+  const [cameraFov, setCameraFov] = useState(45)
+  const [cameraLens, setCameraLens] = useState<CameraLensPreset>('custom')
+  const [cameraKeyframes, setCameraKeyframes] = useState<number[]>([])
+  const [currentFrameHasCameraKeyframe, setCurrentFrameHasCameraKeyframe] = useState(false)
+  const [aspectRatioGuide, setAspectRatioGuide] = useState<AspectRatioOption>('16:9')
+  const [showRuleOfThirds, setShowRuleOfThirds] = useState(true)
   const frameInfoRef = useRef(frameInfo)
   const editingEnabledRef = useRef(editingEnabled)
+  const transformModeRef = useRef<TransformMode>('translate')
+  const transformTargetRef = useRef<'camera' | 'joints' | 'none'>('none')
 
   useEffect(() => {
     if (!viewerContainerRef.current) return
@@ -46,6 +59,23 @@ function App() {
       onKeyframeStateChange: ({ framesWithKeyframes, hasKeyframeAtCurrent }) => {
         setKeyframeFrames(framesWithKeyframes)
         setCurrentFrameHasKeyframe(hasKeyframeAtCurrent)
+      },
+      onCameraKeyframeStateChange: ({ framesWithKeyframes, hasKeyframeAtCurrent }) => {
+        setCameraKeyframes(framesWithKeyframes)
+        setCurrentFrameHasCameraKeyframe(hasKeyframeAtCurrent)
+      },
+      onCameraSettingsChange: ({ fov, lens, locked, viewMode: mode }) => {
+        setCameraFov(fov)
+        setCameraLens(lens)
+        setCameraLocked(locked)
+        setViewMode(mode)
+      },
+      onTransformTargetChange: ({ target }) => {
+        setTransformTarget(target)
+        transformTargetRef.current = target
+        if (target === 'camera' && transformModeRef.current === 'scale') {
+          handleTransformModeChange('translate')
+        }
       },
     }
 
@@ -72,6 +102,20 @@ function App() {
   useEffect(() => {
     editingEnabledRef.current = editingEnabled
   }, [editingEnabled])
+
+  useEffect(() => {
+    transformModeRef.current = transformMode
+  }, [transformMode])
+
+  useEffect(() => {
+    transformTargetRef.current = transformTarget
+  }, [transformTarget])
+
+  const handleTransformModeChange = (mode: TransformMode) => {
+    const resolved = transformTargetRef.current === 'camera' && mode === 'scale' ? 'translate' : mode
+    setTransformMode(resolved)
+    viewerRef.current?.setTransformMode(resolved)
+  }
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -123,20 +167,54 @@ function App() {
         return
       }
 
-      if (!editingEnabledRef.current) return
+      const canUseTransformHotkeys = editingEnabledRef.current || transformTargetRef.current === 'camera'
+      if (!canUseTransformHotkeys) return
 
       if (key === 'w') {
-        setTransformMode('translate')
+        handleTransformModeChange('translate')
       } else if (key === 's') {
-        setTransformMode('scale')
+        handleTransformModeChange('scale')
       } else if (key === 'r') {
-        setTransformMode('rotate')
+        handleTransformModeChange('rotate')
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
+
+  const handleViewModeChange = (mode: ViewMode) => {
+    setViewMode(mode)
+    viewerRef.current?.setViewMode(mode)
+  }
+
+  const handleCameraLockToggle = () => {
+    const next = !cameraLocked
+    setCameraLocked(next)
+    viewerRef.current?.setCameraLocked(next)
+  }
+
+  const handleCameraFovChange = (val: number) => {
+    if (cameraLocked) return
+    setCameraLens('custom')
+    setCameraFov(val)
+    viewerRef.current?.setCameraFov(val, 'custom')
+  }
+
+  const handleCameraLensChange = (lens: CameraLensPreset) => {
+    if (cameraLocked) return
+    setCameraLens(lens)
+    viewerRef.current?.setCameraLens(lens)
+  }
+
+  const handleCameraSyncFromViewport = () => {
+    if (cameraLocked) return
+    viewerRef.current?.syncCameraFromViewport()
+  }
+
+  const handleAddCameraKeyframe = () => viewerRef.current?.addCameraKeyframe()
+
+  const handleClearCameraKeyframe = () => viewerRef.current?.clearCameraKeyframe()
 
   const handleFileLoad = async (file: File) => {
     const text = await file.text()
@@ -229,10 +307,31 @@ function App() {
 
       <div className="main-content">
         <div className="viewport-container" ref={viewerContainerRef}>
+          <AspectRatioOverlay
+            containerRef={viewerContainerRef}
+            aspectRatio={aspectRatioGuide}
+            active={viewMode === 'camera'}
+            showRuleOfThirds={showRuleOfThirds}
+          />
+          <div className="view-toggle">
+            <button
+              className={`view-btn ${viewMode === 'viewport' ? 'active' : ''}`}
+              onClick={() => handleViewModeChange('viewport')}
+            >
+              Viewport View
+            </button>
+            <button
+              className={`view-btn ${viewMode === 'camera' ? 'active' : ''}`}
+              onClick={() => handleViewModeChange('camera')}
+            >
+              Camera View
+            </button>
+          </div>
           <Toolbar
             activeMode={transformMode}
-            onModeChange={setTransformMode}
-            enabled={editingEnabled}
+            onModeChange={handleTransformModeChange}
+            enabled={editingEnabled || transformTarget === 'camera'}
+            scaleDisabled={transformTarget === 'camera'}
           />
         </div>
 
@@ -252,6 +351,20 @@ function App() {
             setSpeed(val)
             viewerRef.current?.setSpeed(val)
           }}
+          cameraFov={cameraFov}
+          cameraLens={cameraLens}
+          onCameraFovChange={handleCameraFovChange}
+          onCameraLensChange={handleCameraLensChange}
+          onCameraSyncFromViewport={handleCameraSyncFromViewport}
+          onAddCameraKeyframe={handleAddCameraKeyframe}
+          onClearCameraKeyframe={handleClearCameraKeyframe}
+          currentFrameHasCameraKeyframe={currentFrameHasCameraKeyframe}
+          cameraLocked={cameraLocked}
+          onCameraLockToggle={handleCameraLockToggle}
+          aspectRatioGuide={aspectRatioGuide}
+          onAspectRatioGuideChange={(val) => setAspectRatioGuide(val)}
+          showRuleOfThirds={showRuleOfThirds}
+          onToggleRuleOfThirds={() => setShowRuleOfThirds(!showRuleOfThirds)}
           editingEnabled={editingEnabled}
           onToggleEditing={() => {
             const next = !editingEnabled
@@ -269,9 +382,11 @@ function App() {
         onPlayBackward={() => viewerRef.current?.toggleReversePlayback()}
         onSeek={(frame) => viewerRef.current?.seekFrame(frame)}
         keyframes={keyframeFrames}
+        cameraKeyframes={cameraKeyframes}
         onPropagateBackwards={() => viewerRef.current?.propagateCurrentFrameBackwards()}
         onPropagateForwards={() => viewerRef.current?.propagateCurrentFrameForwards()}
         currentFrameHasKeyframe={currentFrameHasKeyframe}
+        currentFrameHasCameraKeyframe={currentFrameHasCameraKeyframe}
       />
 
       {exportDialogOpen && (

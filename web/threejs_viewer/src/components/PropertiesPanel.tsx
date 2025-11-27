@@ -1,3 +1,6 @@
+import type { CameraLensPreset } from '../viewer/PoseViewer'
+import type { AspectRatioOption } from './AspectRatioOverlay'
+
 interface PropertiesPanelProps {
     selectionInfo: string
     hasSelection: boolean
@@ -10,6 +13,20 @@ interface PropertiesPanelProps {
     onSpeedChange: (val: number) => void
     editingEnabled: boolean
     onToggleEditing: () => void
+    cameraFov: number
+    cameraLens: CameraLensPreset
+    onCameraFovChange: (val: number) => void
+    onCameraLensChange: (lens: CameraLensPreset) => void
+    onCameraSyncFromViewport: () => void
+    onAddCameraKeyframe: () => void
+    onClearCameraKeyframe: () => void
+    currentFrameHasCameraKeyframe?: boolean
+    cameraLocked: boolean
+    onCameraLockToggle: () => void
+    aspectRatioGuide: AspectRatioOption
+    onAspectRatioGuideChange: (val: AspectRatioOption) => void
+    showRuleOfThirds: boolean
+    onToggleRuleOfThirds: () => void
 }
 
 export function PropertiesPanel({
@@ -24,7 +41,24 @@ export function PropertiesPanel({
     onSpeedChange,
     editingEnabled,
     onToggleEditing,
+    cameraFov,
+    cameraLens,
+    onCameraFovChange,
+    onCameraLensChange,
+    onCameraSyncFromViewport,
+    onAddCameraKeyframe,
+    onClearCameraKeyframe,
+    currentFrameHasCameraKeyframe = false,
+    cameraLocked,
+    onCameraLockToggle,
+    aspectRatioGuide,
+    onAspectRatioGuideChange,
+    showRuleOfThirds,
+    onToggleRuleOfThirds,
 }: PropertiesPanelProps) {
+    const lensOptions: CameraLensPreset[] = ['18mm', '24mm', '35mm', '50mm', '85mm', 'custom']
+    const aspectOptions: AspectRatioOption[] = ['16:9', '1:1', '4:3', '9:16', '3:4', '2:1', 'none']
+
     return (
         <div className="side-panel">
             <h3>Properties</h3>
@@ -57,6 +91,91 @@ export function PropertiesPanel({
                             onChange={(e) => onDepthGainChange(Number(e.target.value))}
                             style={{ width: '100%' }}
                         />
+                    </label>
+                </div>
+            </div>
+
+            <div className="panel-section">
+                <h4>Camera</h4>
+                <div className="control-group" style={{ display: 'flex', gap: 8 }}>
+                    <label style={{ flex: 1 }}>
+                        Lens Type
+                        <select
+                            value={cameraLens}
+                            onChange={(e) => onCameraLensChange(e.target.value as CameraLensPreset)}
+                            disabled={cameraLocked}
+                            style={{ width: '100%', marginTop: 4 }}
+                        >
+                            {lensOptions.map((lens) => (
+                                <option key={lens} value={lens}>
+                                    {lens === 'custom' ? 'Custom' : lens}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label style={{ flex: 1 }}>
+                        FOV: {cameraFov.toFixed(0)}°
+                        <input
+                            type="range"
+                            min={20}
+                            max={110}
+                            step={1}
+                            value={cameraFov}
+                            onChange={(e) => onCameraFovChange(Number(e.target.value))}
+                            disabled={cameraLocked}
+                            style={{ width: '100%' }}
+                        />
+                    </label>
+                </div>
+
+                <div className="button-row" style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button onClick={onCameraSyncFromViewport} disabled={cameraLocked} style={{ flex: 1 }}>
+                        Set From Viewport
+                    </button>
+                    <button
+                        onClick={onCameraLockToggle}
+                        className={cameraLocked ? 'active' : ''}
+                        style={{ flex: 1 }}
+                    >
+                        {cameraLocked ? 'Camera Locked' : 'Lock Camera'}
+                    </button>
+                </div>
+
+                <div className="button-row" style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button onClick={onAddCameraKeyframe} style={{ flex: 1 }}>
+                        Keyframe Camera
+                    </button>
+                    <button
+                        onClick={onClearCameraKeyframe}
+                        disabled={!currentFrameHasCameraKeyframe}
+                        style={{ flex: 1 }}
+                    >
+                        Clear Camera Key
+                    </button>
+                </div>
+
+                <div className="control-group" style={{ marginTop: 12 }}>
+                    <label>
+                        Aspect Guides
+                        <select
+                            value={aspectRatioGuide}
+                            onChange={(e) => onAspectRatioGuideChange(e.target.value as AspectRatioOption)}
+                            style={{ width: '100%', marginTop: 4 }}
+                        >
+                            {aspectOptions.map(option => (
+                                <option key={option} value={option}>
+                                    {option === 'none' ? 'Off' : option}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <input
+                            type="checkbox"
+                            checked={showRuleOfThirds}
+                            onChange={onToggleRuleOfThirds}
+                        />
+                        Show rule of thirds grid
                     </label>
                 </div>
             </div>
