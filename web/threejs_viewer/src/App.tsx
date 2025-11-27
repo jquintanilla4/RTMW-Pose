@@ -289,7 +289,7 @@ function App() {
                 value={exportThickness}
                 onChange={(e) => setExportThickness(e.target.value)}
                 placeholder="Auto"
-                style={{ width: '100%', padding: '8px', fontSize: '1rem' }}
+                style={{ width: '100%', padding: '8px', fontSize: '1rem', boxSizing: 'border-box' }}
               />
             </div>
             <div className="modal-actions">
