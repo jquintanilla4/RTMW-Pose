@@ -38,6 +38,11 @@ function App() {
   const [currentFrameHasCameraKeyframe, setCurrentFrameHasCameraKeyframe] = useState(false)
   const [aspectRatioGuide, setAspectRatioGuide] = useState<AspectRatioOption>('16:9')
   const [showRuleOfThirds, setShowRuleOfThirds] = useState(true)
+  const [cameraVideoScale, setCameraVideoScale] = useState(1)
+  const [cameraHasVideo, setCameraHasVideo] = useState(false)
+  const [cameraVideoLabel, setCameraVideoLabel] = useState('')
+  const [cameraVideoSync, setCameraVideoSync] = useState(true)
+  const [customAspectRatio, setCustomAspectRatio] = useState<number | null>(null)
   const frameInfoRef = useRef(frameInfo)
   const editingEnabledRef = useRef(editingEnabled)
   const transformModeRef = useRef<TransformMode>('translate')
@@ -64,11 +69,24 @@ function App() {
         setCameraKeyframes(framesWithKeyframes)
         setCurrentFrameHasCameraKeyframe(hasKeyframeAtCurrent)
       },
-      onCameraSettingsChange: ({ fov, lens, locked, viewMode: mode }) => {
+      onCameraSettingsChange: ({ fov, lens, locked, viewMode: mode, videoScale, hasCameraVideo, cameraVideoLabel, syncVideoToTimeline, cameraVideoAspect }) => {
         setCameraFov(fov)
         setCameraLens(lens)
         setCameraLocked(locked)
         setViewMode(mode)
+        if (typeof videoScale === 'number') {
+          setCameraVideoScale(videoScale)
+        }
+        const hasVideo = Boolean(hasCameraVideo)
+        setCameraHasVideo(hasVideo)
+        setCameraVideoLabel(cameraVideoLabel || '')
+        if (typeof syncVideoToTimeline === 'boolean') {
+          setCameraVideoSync(syncVideoToTimeline)
+        }
+        if (hasVideo && typeof cameraVideoAspect === 'number' && cameraVideoAspect > 0) {
+          setCustomAspectRatio(prev => (prev === cameraVideoAspect ? prev : cameraVideoAspect))
+          setAspectRatioGuide(prev => (prev === 'custom' ? prev : 'custom'))
+        }
       },
       onTransformTargetChange: ({ target }) => {
         setTransformTarget(target)
@@ -81,6 +99,7 @@ function App() {
 
     const viewer = new PoseViewer({ container: viewerContainerRef.current, callbacks })
     viewerRef.current = viewer
+    viewer.setAspectRatioGuide(aspectRatioGuide, customAspectRatio ?? undefined)
 
     // Preload ffmpeg
     exporterRef.current.load().catch(err => {
@@ -110,6 +129,11 @@ function App() {
   useEffect(() => {
     transformTargetRef.current = transformTarget
   }, [transformTarget])
+
+  useEffect(() => {
+    if (!viewerRef.current) return
+    viewerRef.current.setAspectRatioGuide(aspectRatioGuide, customAspectRatio ?? undefined)
+  }, [aspectRatioGuide, customAspectRatio])
 
   const handleTransformModeChange = (mode: TransformMode) => {
     const resolved = transformTargetRef.current === 'camera' && mode === 'scale' ? 'translate' : mode
@@ -205,6 +229,24 @@ function App() {
     if (cameraLocked) return
     setCameraLens(lens)
     viewerRef.current?.setCameraLens(lens)
+  }
+
+  const handleCameraVideoScaleChange = (val: number) => {
+    setCameraVideoScale(val)
+    viewerRef.current?.setCameraVideoScale(val)
+  }
+
+  const handleCameraVideoSyncChange = (enabled: boolean) => {
+    setCameraVideoSync(enabled)
+    viewerRef.current?.setCameraVideoSync(enabled)
+  }
+
+  const handleCameraVideoUpload = (file: File) => {
+    viewerRef.current?.setCameraReferenceVideo(file)
+  }
+
+  const handleClearCameraVideo = () => {
+    viewerRef.current?.clearCameraReferenceVideo()
   }
 
   const handleCameraSyncFromViewport = () => {
@@ -311,6 +353,7 @@ function App() {
             containerRef={viewerContainerRef}
             aspectRatio={aspectRatioGuide}
             active={viewMode === 'camera'}
+            customAspectRatio={customAspectRatio}
             showRuleOfThirds={showRuleOfThirds}
           />
           <div className="view-toggle">
@@ -361,8 +404,20 @@ function App() {
           currentFrameHasCameraKeyframe={currentFrameHasCameraKeyframe}
           cameraLocked={cameraLocked}
           onCameraLockToggle={handleCameraLockToggle}
+          cameraVideoScale={cameraVideoScale}
+          cameraHasVideo={cameraHasVideo}
+          cameraVideoLabel={cameraVideoLabel}
+          cameraVideoSync={cameraVideoSync}
+          onCameraVideoScaleChange={handleCameraVideoScaleChange}
+          onCameraVideoSyncChange={handleCameraVideoSyncChange}
+          onCameraVideoUpload={handleCameraVideoUpload}
+          onClearCameraVideo={handleClearCameraVideo}
           aspectRatioGuide={aspectRatioGuide}
-          onAspectRatioGuideChange={(val) => setAspectRatioGuide(val)}
+          onAspectRatioGuideChange={(val) => {
+            setAspectRatioGuide(val)
+            viewerRef.current?.setAspectRatioGuide(val, customAspectRatio ?? undefined)
+          }}
+          customAspectRatio={customAspectRatio}
           showRuleOfThirds={showRuleOfThirds}
           onToggleRuleOfThirds={() => setShowRuleOfThirds(!showRuleOfThirds)}
           editingEnabled={editingEnabled}

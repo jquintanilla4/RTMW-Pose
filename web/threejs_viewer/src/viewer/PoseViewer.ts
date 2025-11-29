@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { renderKijaiPoseFrame } from '../utils/KijaiPoseRenderer';
+import type { AspectRatioOption } from '../components/AspectRatioOverlay';
 
 const COLORS = {
   body: [0.1, 0.8, 0.95],
@@ -79,7 +80,18 @@ export interface PoseViewerCallbacks {
   onSelectionInfoChange?: (info: { text: string; hasSelection: boolean }) => void;
   onKeyframeStateChange?: (info: { framesWithKeyframes: number[]; hasKeyframeAtCurrent: boolean }) => void;
   onCameraKeyframeStateChange?: (info: { framesWithKeyframes: number[]; hasKeyframeAtCurrent: boolean }) => void;
-  onCameraSettingsChange?: (info: { fov: number; lens: CameraLensPreset; locked: boolean; viewMode: ViewMode }) => void;
+  onCameraSettingsChange?: (info: {
+    fov: number;
+    lens: CameraLensPreset;
+    locked: boolean;
+    viewMode: ViewMode;
+    videoScale?: number;
+    hasCameraVideo?: boolean;
+    cameraVideoLabel?: string;
+    syncVideoToTimeline?: boolean;
+    cameraAspectRatio?: number;
+    cameraVideoAspect?: number;
+  }) => void;
   onTransformTargetChange?: (info: { target: 'camera' | 'joints' | 'none' }) => void;
 }
 
@@ -316,12 +328,28 @@ export class PoseViewer {
   private viewportCamera: THREE.PerspectiveCamera;
   private shotCamera: THREE.PerspectiveCamera;
   private viewMode: ViewMode = 'viewport';
+  private currentAspectRatioGuide: AspectRatioOption = '16:9';
+  private cameraAspectOverride: number | null = null;
+  private cameraAspectFromVideo: number | null = null;
+  private cameraViewport = { x: 0, y: 0, width: 1, height: 1, aspect: 1 };
+  private canvasWidth = 1;
+  private canvasHeight = 1;
   private orbitTarget = new THREE.Vector3(0, 0.1, 0);
   private orbitState = { theta: Math.PI, phi: 1.0, radius: 2.6 };
   private cameraOrbitState = { theta: Math.PI, phi: 1.0, radius: 2.6 };
   private cameraLocked = false;
   private cameraLens: CameraLensPreset = 'custom';
   private shotRig: THREE.Group;
+  private cameraVideoElement: HTMLVideoElement | null = null;
+  private cameraVideoTexture: THREE.VideoTexture | null = null;
+  private cameraVideoMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial> | null = null;
+  private cameraVideoPlaneDistance = 1.5;
+  private cameraVideoScale = 1;
+  private cameraVideoAspect = 16 / 9;
+  private cameraVideoLabel = '';
+  private cameraVideoUrl: string | null = null;
+  private cameraVideoDuration = 0;
+  private cameraVideoSyncToTimeline = true;
   private cameraKeyframes = new Map<number, CameraSnapshot>();
   private currentCameraState: CameraSnapshot | null = null;
   private ambient: THREE.AmbientLight;
@@ -363,6 +391,7 @@ export class PoseViewer {
     startY: 0,
     moved: false,
   };
+  private lastVideoSyncFrame = -1;
   private marqueeElement: HTMLDivElement;
   private frames: PoseFrame[] = [];
   private baseFrames: PoseFrame[] = [];
@@ -400,6 +429,8 @@ export class PoseViewer {
     this.shotCamera = new THREE.PerspectiveCamera(CAMERA_LENS_FOV[this.cameraLens], 1, 0.01, 100);
     this.updateOrbitCamera(this.orbitState, this.viewportCamera);
     this.updateOrbitCamera(this.cameraOrbitState, this.shotCamera);
+    this.scene.add(this.viewportCamera);
+    this.scene.add(this.shotCamera);
     this.currentCameraState = this.captureCameraSnapshot(this.shotCamera);
 
     this.shotRig = this.createCameraRig();
@@ -496,6 +527,7 @@ export class PoseViewer {
     canvas.removeEventListener('pointerleave', this.handleSelectionPointerCancel);
     canvas.removeEventListener('pointercancel', this.handleSelectionPointerCancel);
     this.transformControls.dispose();
+    this.disposeCameraVideo();
     this.renderer.dispose();
     this.container.removeChild(canvas);
     if (this.marqueeElement.parentElement === this.container) {
@@ -510,11 +542,15 @@ export class PoseViewer {
   private resizeRenderer() {
     const width = this.container.clientWidth || this.container.offsetWidth || 640;
     const height = Math.max(200, (window.innerHeight || 720) - 70);
+    this.canvasWidth = width;
+    this.canvasHeight = height;
+    this.renderer.setSize(width, height);
     this.viewportCamera.aspect = width / height;
     this.viewportCamera.updateProjectionMatrix();
-    this.shotCamera.aspect = width / height;
+    this.cameraViewport = this.computeCameraViewport(width, height);
+    this.shotCamera.aspect = this.cameraViewport.aspect;
     this.shotCamera.updateProjectionMatrix();
-    this.renderer.setSize(width, height);
+    this.updateCameraVideoPlane();
   }
 
 
@@ -629,12 +665,128 @@ export class PoseViewer {
     this.shotCamera.layers.disable(CAMERA_RIG_LAYER);
   }
 
+  private getTargetCameraAspect(containerAspect: number) {
+    if (this.cameraAspectOverride && this.cameraAspectOverride > 0) return this.cameraAspectOverride;
+    if (this.cameraAspectFromVideo && this.cameraAspectFromVideo > 0) return this.cameraAspectFromVideo;
+    return containerAspect;
+  }
+
+  private computeCameraViewport(width: number, height: number) {
+    const safeWidth = Math.max(1, width);
+    const safeHeight = Math.max(1, height);
+    const containerAspect = safeWidth / safeHeight;
+    const targetAspect = this.getTargetCameraAspect(containerAspect);
+    let viewWidth = safeWidth;
+    let viewHeight = safeHeight;
+    if (Math.abs(targetAspect - containerAspect) > 1e-4) {
+      if (targetAspect > containerAspect) {
+        viewHeight = safeWidth / targetAspect;
+      } else {
+        viewWidth = safeHeight * targetAspect;
+      }
+    }
+    const viewportWidth = Math.max(1, Math.round(viewWidth));
+    const viewportHeight = Math.max(1, Math.round(viewHeight));
+    const x = Math.round((safeWidth - viewportWidth) / 2);
+    const y = Math.round((safeHeight - viewportHeight) / 2);
+    return { x, y, width: viewportWidth, height: viewportHeight, aspect: targetAspect };
+  }
+
+  private applyViewportForRender() {
+    this.renderer.setViewport(0, 0, this.canvasWidth, this.canvasHeight);
+    this.renderer.setScissorTest(false);
+    if (this.scene.background instanceof THREE.Color) {
+      this.renderer.setClearColor(this.scene.background);
+    }
+    this.renderer.clear();
+    if (this.viewMode === 'camera') {
+      const vp = this.cameraViewport;
+      this.renderer.setViewport(vp.x, vp.y, vp.width, vp.height);
+      this.renderer.setScissor(vp.x, vp.y, vp.width, vp.height);
+      this.renderer.setScissorTest(true);
+    }
+  }
+
+  private updateCameraVideoPlane() {
+    if (!this.cameraVideoMesh) return;
+    const distance = Math.max(0.05, this.cameraVideoPlaneDistance);
+    this.cameraVideoPlaneDistance = distance;
+    this.cameraVideoMesh.position.set(0, 0, -distance);
+
+    const aspect = this.cameraVideoAspect > 0 ? this.cameraVideoAspect : 1;
+    const viewHeight = 2 * distance * Math.tan((this.shotCamera.fov * Math.PI) / 360);
+    const viewWidth = viewHeight * (this.cameraViewport.aspect || this.shotCamera.aspect || 1);
+    const scale = Math.max(0.05, this.cameraVideoScale);
+    const planeWidth = viewWidth * scale;
+    const planeHeight = planeWidth / aspect;
+    this.cameraVideoMesh.scale.set(planeWidth, planeHeight, 1);
+    this.cameraVideoMesh.visible = this.viewMode === 'camera';
+  }
+
+  private disposeCameraVideo() {
+    if (this.cameraVideoMesh) {
+      this.shotCamera.remove(this.cameraVideoMesh);
+      this.cameraVideoMesh.geometry.dispose();
+      this.cameraVideoMesh.material.dispose();
+      this.cameraVideoMesh = null;
+    }
+    if (this.cameraVideoTexture) {
+      this.cameraVideoTexture.dispose();
+      this.cameraVideoTexture = null;
+    }
+    if (this.cameraVideoElement) {
+      this.cameraVideoElement.pause();
+      this.cameraVideoElement.src = '';
+      this.cameraVideoElement.load();
+      this.cameraVideoElement = null;
+    }
+    if (this.cameraVideoUrl) {
+      URL.revokeObjectURL(this.cameraVideoUrl);
+      this.cameraVideoUrl = null;
+    }
+    this.cameraVideoLabel = '';
+    this.cameraVideoScale = 1;
+    this.cameraVideoAspect = 16 / 9;
+    this.cameraVideoDuration = 0;
+    this.cameraAspectFromVideo = null;
+    this.lastVideoSyncFrame = -1;
+  }
+
   private afterShotCameraChanged(emitSettings = true) {
     this.currentCameraState = this.captureCameraSnapshot(this.shotCamera, this.cameraLens);
     this.syncOrbitStateFromCamera(this.shotCamera, this.cameraOrbitState);
     this.updateCameraRigFromShotCamera();
+    this.updateCameraVideoPlane();
     if (emitSettings) {
       this.emitCameraSettings();
+    }
+  }
+
+  private updateCameraVideoForFrame(frameIndex: number, force = false) {
+    if (!this.cameraVideoElement || !this.cameraVideoSyncToTimeline) return;
+    if (frameIndex < 0) return;
+    if (!force && frameIndex === this.lastVideoSyncFrame) return;
+    const video = this.cameraVideoElement;
+    const duration = this.cameraVideoDuration || video.duration || 0;
+    if (!(duration > 0) || !(this.effectiveFps > 0)) return;
+    const timeRaw = frameIndex / this.effectiveFps;
+    let targetTime = duration > 0 ? timeRaw % duration : timeRaw;
+    if (targetTime < 0) targetTime += duration;
+    if (Math.abs(video.currentTime - targetTime) > 0.02) {
+      video.currentTime = targetTime;
+    }
+    this.lastVideoSyncFrame = frameIndex;
+  }
+
+  private updateCameraVideoPlayback() {
+    if (!this.cameraVideoElement) return;
+    if (this.isPlaying) {
+      if (this.cameraVideoSyncToTimeline && this.displayedFrame >= 0) {
+        this.updateCameraVideoForFrame(this.displayedFrame, true);
+      }
+      this.cameraVideoElement.play().catch(() => undefined);
+    } else {
+      this.cameraVideoElement.pause();
     }
   }
 
@@ -1028,6 +1180,25 @@ export class PoseViewer {
     this.transformControls.updateMatrixWorld();
     this.updateCameraRigFromShotCamera();
     this.updateShotRigVisibility();
+    this.updateCameraVideoPlane();
+    this.emitCameraSettings();
+  }
+
+  private parseAspectRatioOption(option: AspectRatioOption, customAspectRatio?: number | null) {
+    if (option === 'none') return null;
+    if (option === 'custom') {
+      if (customAspectRatio && customAspectRatio > 0) return customAspectRatio;
+      return this.cameraVideoAspect > 0 ? this.cameraVideoAspect : null;
+    }
+    const [w, h] = option.split(':').map(Number);
+    return w > 0 && h > 0 ? w / h : null;
+  }
+
+  setAspectRatioGuide(option: AspectRatioOption, customAspectRatio?: number | null) {
+    this.currentAspectRatioGuide = option;
+    this.cameraAspectOverride = this.parseAspectRatioOption(option, customAspectRatio);
+    this.resizeRenderer();
+    this.updateCameraVideoPlane();
     this.emitCameraSettings();
   }
 
@@ -1065,6 +1236,121 @@ export class PoseViewer {
     this.shotCamera.updateProjectionMatrix();
     this.cameraLens = this.deriveLensFromFov(this.shotCamera.fov);
     this.afterShotCameraChanged();
+  }
+
+  async setCameraReferenceVideo(file: File | null) {
+    if (!file) {
+      this.disposeCameraVideo();
+      this.cameraAspectOverride = this.parseAspectRatioOption(this.currentAspectRatioGuide, null);
+      this.resizeRenderer();
+      this.emitCameraSettings();
+      this.callbacks.onStatusChange?.('Camera reference video cleared.');
+      return;
+    }
+
+    this.callbacks.onStatusChange?.('Loading camera reference video...');
+    this.disposeCameraVideo();
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.loop = true;
+    video.muted = true;
+    video.preload = 'auto';
+    video.playsInline = true;
+    video.crossOrigin = 'anonymous';
+    video.src = url;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const handleLoaded = () => {
+          cleanup();
+          resolve();
+        };
+        const handleError = () => {
+          cleanup();
+          reject(new Error('Video failed to load'));
+        };
+        const cleanup = () => {
+          video.removeEventListener('loadedmetadata', handleLoaded);
+          video.removeEventListener('error', handleError);
+        };
+        video.addEventListener('loadedmetadata', handleLoaded);
+        video.addEventListener('error', handleError);
+        video.load();
+      });
+      await video.play().catch(() => undefined);
+
+      const aspect = video.videoWidth > 0 && video.videoHeight > 0 ? video.videoWidth / video.videoHeight : 16 / 9;
+      this.cameraVideoAspect = aspect;
+      this.cameraVideoScale = 1;
+      this.cameraAspectFromVideo = aspect;
+      this.cameraAspectOverride = aspect;
+      this.currentAspectRatioGuide = 'custom';
+      this.resizeRenderer();
+      this.cameraVideoElement = video;
+      this.cameraVideoUrl = url;
+      this.cameraVideoLabel = file.name || 'Reference video';
+      this.cameraVideoDuration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+      this.lastVideoSyncFrame = -1;
+
+      const texture = new THREE.VideoTexture(video);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.generateMipmaps = false;
+      this.cameraVideoTexture = texture;
+
+      const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        toneMapped: false,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+      });
+      const geometry = new THREE.PlaneGeometry(1, 1);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.renderOrder = -1;
+      mesh.name = 'CameraReferenceVideo';
+      this.cameraVideoMesh = mesh;
+      this.shotCamera.add(mesh);
+
+      this.updateCameraVideoPlane();
+      if (this.displayedFrame >= 0) {
+        this.updateCameraVideoForFrame(this.displayedFrame, true);
+      }
+      this.updateCameraVideoPlayback();
+      this.emitCameraSettings();
+      this.callbacks.onStatusChange?.(`Loaded camera video: ${this.cameraVideoLabel}`);
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      this.callbacks.onStatusChange?.('Failed to load camera reference video.');
+      console.error('Failed to load camera video', error);
+    }
+  }
+
+  clearCameraReferenceVideo() {
+    this.disposeCameraVideo();
+    this.cameraAspectOverride = this.parseAspectRatioOption(this.currentAspectRatioGuide, null);
+    this.resizeRenderer();
+    this.emitCameraSettings();
+    this.callbacks.onStatusChange?.('Camera reference video cleared.');
+    this.updateCameraVideoPlayback();
+  }
+
+  setCameraVideoScale(scale: number) {
+    const clamped = Number.isFinite(scale) ? Math.min(4, Math.max(0.25, scale)) : this.cameraVideoScale;
+    this.cameraVideoScale = clamped;
+    this.updateCameraVideoPlane();
+    this.emitCameraSettings();
+  }
+
+  setCameraVideoSync(enabled: boolean) {
+    this.cameraVideoSyncToTimeline = Boolean(enabled);
+    this.lastVideoSyncFrame = -1;
+    if (this.cameraVideoSyncToTimeline && this.displayedFrame >= 0) {
+      this.updateCameraVideoForFrame(this.displayedFrame, true);
+    }
+    this.updateCameraVideoPlayback();
+    this.emitCameraSettings();
   }
 
   addCameraKeyframe(frameIndex?: number) {
@@ -1158,6 +1444,12 @@ export class PoseViewer {
       lens: this.cameraLens,
       locked: this.cameraLocked,
       viewMode: this.viewMode,
+      videoScale: this.cameraVideoScale,
+      hasCameraVideo: Boolean(this.cameraVideoTexture),
+      cameraVideoLabel: this.cameraVideoLabel,
+      syncVideoToTimeline: this.cameraVideoSyncToTimeline,
+      cameraAspectRatio: this.cameraViewport.aspect,
+      cameraVideoAspect: this.cameraVideoAspect,
     });
   }
 
@@ -1186,6 +1478,7 @@ export class PoseViewer {
       }
     }
     this.scene.add(this.transformControls.getHelper());
+    this.applyViewportForRender();
     this.renderer.render(this.scene, this.getActiveCamera());
     if (this.editingState.selectedHandles.length > 0 && Math.random() < 0.01) {
       console.log('TransformControls:', this.transformControls);
@@ -1590,8 +1883,23 @@ export class PoseViewer {
 
   private prepareRayFromEvent(event: PointerEvent | MouseEvent) {
     const rect = this.renderer.domElement.getBoundingClientRect();
-    this.pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    this.pointerNdc.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    let x = event.clientX - rect.left;
+    let y = event.clientY - rect.top;
+    let width = rect.width;
+    let height = rect.height;
+
+    if (this.viewMode === 'camera' && this.cameraViewport.width > 0 && this.cameraViewport.height > 0) {
+      x -= this.cameraViewport.x;
+      y -= this.cameraViewport.y;
+      width = this.cameraViewport.width;
+      height = this.cameraViewport.height;
+      x = Math.max(0, Math.min(width, x));
+      y = Math.max(0, Math.min(height, y));
+    }
+
+    if (!(width > 0) || !(height > 0)) return;
+    this.pointerNdc.x = (x / width) * 2 - 1;
+    this.pointerNdc.y = -(y / height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointerNdc, this.getActiveCamera());
   }
 
@@ -1633,6 +1941,7 @@ export class PoseViewer {
       this.refreshSelectionProxyFromHandles();
     }
     this.displayedFrame = index;
+    this.updateCameraVideoForFrame(index, true);
     this.applyCameraForFrame(index);
     this.callbacks.onFrameUpdate?.({ index, total: this.frames.length, personCount: people.length });
     this.emitKeyframeState();
@@ -1647,6 +1956,7 @@ export class PoseViewer {
       this.frameKeyframes.clear();
       this.cameraKeyframes.clear();
       this.cameraLocked = false;
+      this.lastVideoSyncFrame = -1;
       this.meta = payload.meta || {};
       this.effectiveFps = this.meta.effective_fps || this.meta.video_fps || 30;
       this.depthGain = 1;
@@ -1717,10 +2027,12 @@ export class PoseViewer {
     if (this.isPlaying === value) return;
     this.isPlaying = value;
     this.callbacks.onPlaybackStateChange?.(this.isPlaying);
+    this.updateCameraVideoPlayback();
   }
 
   async captureFrame(): Promise<Blob | null> {
     return new Promise((resolve) => {
+      this.applyViewportForRender();
       this.renderer.render(this.scene, this.getActiveCamera());
       this.renderer.domElement.toBlob((blob) => {
         resolve(blob);

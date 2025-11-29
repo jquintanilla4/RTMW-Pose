@@ -1,16 +1,17 @@
 import type { RefObject } from 'react'
 import { useEffect, useState } from 'react'
 
-export type AspectRatioOption = 'none' | '16:9' | '1:1' | '4:3' | '9:16' | '3:4' | '2:1'
+export type AspectRatioOption = 'none' | '16:9' | '1:1' | '4:3' | '9:16' | '3:4' | '2:1' | 'custom'
 
 interface AspectRatioOverlayProps {
     containerRef: RefObject<HTMLDivElement | null>
     aspectRatio: AspectRatioOption
     active: boolean
     showRuleOfThirds?: boolean
+    customAspectRatio?: number | null
 }
 
-export function AspectRatioOverlay({ containerRef, aspectRatio, active, showRuleOfThirds = true }: AspectRatioOverlayProps) {
+export function AspectRatioOverlay({ containerRef, aspectRatio, active, showRuleOfThirds = true, customAspectRatio }: AspectRatioOverlayProps) {
     const [size, setSize] = useState({ width: 0, height: 0 })
 
     useEffect(() => {
@@ -36,10 +37,15 @@ export function AspectRatioOverlay({ containerRef, aspectRatio, active, showRule
 
     if (!active || aspectRatio === 'none') return null
 
-    const [w, h] = aspectRatio.split(':').map(Number)
-    if (!w || !h || !size.width || !size.height) return null
+    const parseAspectRatio = () => {
+        if (aspectRatio === 'custom') return customAspectRatio ?? null
+        const [w, h] = aspectRatio.split(':').map(Number)
+        if (!w || !h) return null
+        return w / h
+    }
 
-    const ratio = w / h
+    const ratio = parseAspectRatio()
+    if (!ratio || !size.width || !size.height) return null
     const containerRatio = size.width / size.height
     const guideWidth = containerRatio > ratio ? size.height * ratio : size.width
     const guideHeight = containerRatio > ratio ? size.height : size.width / ratio
