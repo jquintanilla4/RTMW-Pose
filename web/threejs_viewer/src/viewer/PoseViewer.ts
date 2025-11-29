@@ -541,7 +541,9 @@ export class PoseViewer {
 
   private resizeRenderer() {
     const width = this.container.clientWidth || this.container.offsetWidth || 640;
-    const height = Math.max(200, (window.innerHeight || 720) - 70);
+    const rectHeight = this.container.getBoundingClientRect?.().height || 0;
+    const fallbackHeight = (window.innerHeight || 720) - 70;
+    const height = Math.max(200, this.container.clientHeight || this.container.offsetHeight || rectHeight || fallbackHeight);
     this.canvasWidth = width;
     this.canvasHeight = height;
     this.renderer.setSize(width, height);
@@ -720,7 +722,7 @@ export class PoseViewer {
     const planeWidth = viewWidth * scale;
     const planeHeight = planeWidth / aspect;
     this.cameraVideoMesh.scale.set(planeWidth, planeHeight, 1);
-    this.cameraVideoMesh.visible = this.viewMode === 'camera';
+    this.cameraVideoMesh.visible = true;
   }
 
   private disposeCameraVideo() {
