@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { PoseViewer } from './viewer/PoseViewer'
-import type { CameraLensPreset, PoseViewerCallbacks, TransformMode, ViewMode } from './viewer/PoseViewer'
+import type { CameraLensPreset, PoseViewerCallbacks, TransformMode, ViewMode, ViewPreset } from './viewer/PoseViewer'
 import { Header } from './components/Header'
 import { Toolbar } from './components/Toolbar'
 import { PropertiesPanel } from './components/PropertiesPanel'
@@ -9,6 +9,7 @@ import { Timeline } from './components/Timeline'
 import { VideoExporter } from './utils/VideoExporter'
 import { AspectRatioOverlay } from './components/AspectRatioOverlay'
 import type { AspectRatioOption } from './components/AspectRatioOverlay'
+import { ViewShortcuts } from './components/ViewShortcuts'
 
 function App() {
   const viewerContainerRef = useRef<HTMLDivElement | null>(null)
@@ -249,6 +250,10 @@ function App() {
     viewerRef.current?.clearCameraReferenceVideo()
   }
 
+  const handleViewPresetChange = (preset: ViewPreset) => {
+    viewerRef.current?.animateToView(preset)
+  }
+
   const handleCameraSyncFromViewport = () => {
     if (cameraLocked) return
     viewerRef.current?.syncCameraFromViewport()
@@ -376,6 +381,7 @@ function App() {
             enabled={editingEnabled || transformTarget === 'camera'}
             scaleDisabled={transformTarget === 'camera'}
           />
+          <ViewShortcuts onViewChange={handleViewPresetChange} />
         </div>
 
         <PropertiesPanel

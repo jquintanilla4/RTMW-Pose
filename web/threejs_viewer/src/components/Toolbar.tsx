@@ -18,6 +18,7 @@ export function Toolbar({ activeMode, onModeChange, enabled, scaleDisabled = fal
                 onClick={() => onModeChange('translate')}
                 title="Move (W)"
             >
+                <span className="hover-label">Move</span>
                 <MoveIcon />
             </button>
             <button
@@ -25,6 +26,7 @@ export function Toolbar({ activeMode, onModeChange, enabled, scaleDisabled = fal
                 onClick={() => onModeChange('rotate')}
                 title="Rotate (R)"
             >
+                <span className="hover-label">Rotate</span>
                 <RotateIcon />
             </button>
             <button
@@ -33,6 +35,7 @@ export function Toolbar({ activeMode, onModeChange, enabled, scaleDisabled = fal
                 title="Scale (S)"
                 disabled={scaleDisabled}
             >
+                <span className="hover-label">Scale</span>
                 <ScaleIcon />
             </button>
         </div>

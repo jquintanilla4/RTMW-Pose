@@ -41,6 +41,7 @@ const CAMERA_LENS_FOV: Record<CameraLensPreset, number> = {
 };
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
+export type ViewPreset = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
 
 export type PosePoint = [number, number, number];
 
@@ -406,6 +407,17 @@ export class PoseViewer {
   private depthGain = 1;
   private speedMultiplier = 1;
   private meta: any = {};
+  private viewTransition: {
+    active: boolean;
+    startTime: number;
+    duration: number;
+    startTheta: number;
+    startPhi: number;
+    startRadius: number;
+    endTheta: number;
+    endPhi: number;
+    endRadius: number;
+  } | null = null;
 
   constructor(options: PoseViewerOptions) {
     this.container = options.container;
@@ -1240,6 +1252,53 @@ export class PoseViewer {
     this.afterShotCameraChanged();
   }
 
+  animateToView(preset: ViewPreset) {
+    // View presets define theta (horizontal angle) and phi (vertical angle from top)
+    // theta: 0 = looking from +Z, PI = looking from -Z, PI/2 = looking from +X
+    // phi: 0 = looking from top, PI = looking from bottom, PI/2 = looking from side
+    const presets: Record<ViewPreset, { theta: number; phi: number }> = {
+      front: { theta: Math.PI, phi: Math.PI / 2 },           // Looking from -Z towards origin
+      back: { theta: 0, phi: Math.PI / 2 },                  // Looking from +Z towards origin
+      left: { theta: Math.PI / 2, phi: Math.PI / 2 },        // Looking from +X towards origin
+      right: { theta: -Math.PI / 2, phi: Math.PI / 2 },      // Looking from -X towards origin
+      top: { theta: Math.PI, phi: 0.05 },                    // Looking from above (small phi to avoid gimbal lock)
+      bottom: { theta: Math.PI, phi: Math.PI - 0.05 },       // Looking from below
+    };
+
+    const target = presets[preset];
+    if (!target) return;
+
+    const orbitState = this.getActiveOrbitState();
+
+    // Normalize current theta to find shortest rotation path
+    let startTheta = orbitState.theta;
+    let endTheta = target.theta;
+
+    // Normalize to [-PI, PI] range for shortest path calculation
+    while (startTheta > Math.PI) startTheta -= 2 * Math.PI;
+    while (startTheta < -Math.PI) startTheta += 2 * Math.PI;
+    while (endTheta > Math.PI) endTheta -= 2 * Math.PI;
+    while (endTheta < -Math.PI) endTheta += 2 * Math.PI;
+
+    // Find shortest rotation direction
+    let deltaTheta = endTheta - startTheta;
+    if (deltaTheta > Math.PI) deltaTheta -= 2 * Math.PI;
+    if (deltaTheta < -Math.PI) deltaTheta += 2 * Math.PI;
+    endTheta = startTheta + deltaTheta;
+
+    this.viewTransition = {
+      active: true,
+      startTime: performance.now(),
+      duration: 400, // 400ms for smooth transition
+      startTheta: startTheta,
+      startPhi: orbitState.phi,
+      startRadius: orbitState.radius,
+      endTheta: endTheta,
+      endPhi: target.phi,
+      endRadius: orbitState.radius, // Keep current distance
+    };
+  }
+
   async setCameraReferenceVideo(file: File | null) {
     if (!file) {
       this.disposeCameraVideo();
@@ -1460,6 +1519,37 @@ export class PoseViewer {
     const now = performance.now();
     const delta = (now - this.lastFrameTime) / 1000;
     this.lastFrameTime = now;
+
+    // Handle view transition animation
+    if (this.viewTransition?.active) {
+      const elapsed = now - this.viewTransition.startTime;
+      const t = Math.min(1, elapsed / this.viewTransition.duration);
+      // Ease-out cubic for smooth deceleration
+      const eased = 1 - Math.pow(1 - t, 3);
+
+      const orbitState = this.getActiveOrbitState();
+      const newTheta = this.viewTransition.startTheta + (this.viewTransition.endTheta - this.viewTransition.startTheta) * eased;
+      const newPhi = this.viewTransition.startPhi + (this.viewTransition.endPhi - this.viewTransition.startPhi) * eased;
+      const newRadius = this.viewTransition.startRadius + (this.viewTransition.endRadius - this.viewTransition.startRadius) * eased;
+
+      orbitState.theta = newTheta;
+      orbitState.phi = newPhi;
+      orbitState.radius = newRadius;
+      this.updateOrbitCamera(orbitState, this.getActiveCamera());
+
+      if (t >= 1) {
+        // Normalize theta to [-PI, PI] range when animation completes
+        while (orbitState.theta > Math.PI) orbitState.theta -= 2 * Math.PI;
+        while (orbitState.theta < -Math.PI) orbitState.theta += 2 * Math.PI;
+        this.viewTransition = null;
+
+        // If in camera mode, update the camera state
+        if (this.viewMode === 'camera') {
+          this.afterShotCameraChanged();
+        }
+      }
+    }
+
     if (this.isPlaying && this.frames.length > 0 && this.effectiveFps > 0) {
       const duration = this.frames.length / this.effectiveFps;
       if (duration > 0) {
