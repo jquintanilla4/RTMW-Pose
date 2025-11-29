@@ -388,6 +388,7 @@ function App() {
           selectionInfo={selectionInfo}
           hasSelection={hasSelection}
           onClearSelection={() => viewerRef.current?.clearSelection()}
+          onAddKeyframe={() => viewerRef.current?.addKeyframeForSelection()}
           onResetFrame={() => viewerRef.current?.clearFrameKeyframes()}
           canResetFrame={currentFrameHasKeyframe}
           depthGain={depthGain}

@@ -24,6 +24,9 @@ const SELECTED_HANDLE_COLOR = new THREE.Color(1, 1, 1);
 const HANDLE_DEFAULT_SCALE = 1;
 const HANDLE_SELECTED_SCALE = 1.5;
 const CAMERA_RIG_LAYER = 1;
+const RIG_HANDLE_COLOR = new THREE.Color(0.95, 0.35, 0.2);
+const RIG_HANDLE_GEOMETRY = new THREE.RingGeometry(0.11, 0.16, 32);
+RIG_HANDLE_GEOMETRY.rotateX(-Math.PI / 2);
 
 const EDGE_PAIRS: Array<[number, number]> = [];
 const EDGE_COLOR_PER_EDGE: Array<[number, number, number]> = [];
@@ -101,12 +104,13 @@ export interface PoseViewerOptions {
   callbacks?: PoseViewerCallbacks;
 }
 
-type JointHandle = THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> & {
+type JointHandle = THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial> & {
   userData: {
     baseColor: THREE.Color;
     jointIndex: number;
     personIndex: number;
     isSelected: boolean;
+    isRig?: boolean;
   };
 };
 
@@ -119,6 +123,8 @@ interface PersonObject {
   pointGeom: THREE.BufferGeometry;
   pointPositions: Float32Array;
   jointHandles: JointHandle[];
+  rigHandle: JointHandle;
+  rigHandleHasPosition: boolean;
   personIndex: number;
 }
 
@@ -127,6 +133,7 @@ interface TransformSessionEntry {
   personIndex: number;
   jointIndex: number;
   startPosition: THREE.Vector3;
+  skipKeyframe?: boolean;
 }
 
 interface TransformSession {
@@ -140,6 +147,12 @@ interface CameraSnapshot {
   quaternion: THREE.Quaternion;
   fov: number;
   lens: CameraLensPreset;
+}
+
+interface RigTransform {
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  scale: THREE.Vector3;
 }
 
 function addEdges(edgeList: Array<[number, number]>, colorKey: keyof typeof COLORS) {
@@ -314,6 +327,50 @@ function makeJointKey(personIndex: number, jointIndex: number) {
   return `${personIndex}:${jointIndex}`;
 }
 
+function identityRigTransform(): RigTransform {
+  return {
+    position: new THREE.Vector3(),
+    quaternion: new THREE.Quaternion(),
+    scale: new THREE.Vector3(1, 1, 1),
+  };
+}
+
+function cloneRigTransform(transform: RigTransform): RigTransform {
+  return {
+    position: transform.position.clone(),
+    quaternion: transform.quaternion.clone(),
+    scale: transform.scale.clone(),
+  };
+}
+
+function rigTransformToMatrix(transform: RigTransform): THREE.Matrix4 {
+  return new THREE.Matrix4().compose(transform.position.clone(), transform.quaternion.clone(), transform.scale.clone());
+}
+
+function matrixToRigTransform(matrix: THREE.Matrix4): RigTransform {
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  matrix.decompose(position, quaternion, scale);
+  quaternion.normalize();
+  return { position, quaternion, scale };
+}
+
+function interpolateRigTransforms(a: RigTransform, b: RigTransform, t: number): RigTransform {
+  const clamped = Math.min(1, Math.max(0, t));
+  const position = a.position.clone().lerp(b.position, clamped);
+  const quaternion = a.quaternion.clone().slerp(b.quaternion, clamped);
+  const scale = a.scale.clone().lerp(b.scale, clamped);
+  return { position, quaternion, scale };
+}
+
+function isIdentityMatrix(matrix: THREE.Matrix4) {
+  return matrix.elements.every((val, idx) => {
+    const target = idx % 5 === 0 ? 1 : 0;
+    return Math.abs(val - target) < 1e-9;
+  });
+}
+
 function getJointBaseColor(index: number) {
   for (const range of JOINT_COLOR_RANGES) {
     if (index < range.end) return range.color;
@@ -396,6 +453,8 @@ export class PoseViewer {
   private marqueeElement: HTMLDivElement;
   private frames: PoseFrame[] = [];
   private baseFrames: PoseFrame[] = [];
+  private rigBaseFrames: PoseFrame[] = [];
+  private rigKeyframes = new Map<number, Map<number, RigTransform>>();
   private frameKeyframes = new Map<number, Set<string>>();
   private effectiveFps = 30;
   private isPlaying = false;
@@ -941,8 +1000,6 @@ export class PoseViewer {
   private handleSelectionPointerDown = (event: PointerEvent) => {
     if (!this.editingState.enabled || event.button !== 0) return;
     if (!(event.metaKey || event.ctrlKey)) return;
-    if (!(event.metaKey || event.ctrlKey)) return;
-    console.log('handleSelectionPointerDown', event.clientX, event.clientY);
     if (this.selectionPointerState.suppressClick) return;
     this.selectionPointerState.pointerId = event.pointerId;
     this.selectionPointerState.startX = event.clientX;
@@ -992,11 +1049,9 @@ export class PoseViewer {
       this.selectHandlesInMarquee(additive);
     } else if (!moved) {
       const hit = this.selectJointAtEvent(event);
-      if (!hit && !event.shiftKey && !event.metaKey) {
-        // Only clear if not dragging transform
-        if (!this.editingState.transformDragging) {
-          this.clearSelection();
-        }
+      const hasModifier = event.metaKey || event.ctrlKey;
+      if (!hit && hasModifier && !event.shiftKey && !this.editingState.transformDragging) {
+        this.clearSelection();
       }
     }
   };
@@ -1051,7 +1106,8 @@ export class PoseViewer {
     const activeCamera = this.getActiveCamera();
     this.peopleObjects.forEach((obj) => {
       if (!obj.group.visible) return;
-      obj.jointHandles.forEach((handle) => {
+      const handles = obj.rigHandle ? [...obj.jointHandles, obj.rigHandle] : obj.jointHandles;
+      handles.forEach((handle) => {
         if (!handle.visible) return;
         handle.getWorldPosition(this.tempVector3);
         this.tempVector3.project(activeCamera);
@@ -1065,9 +1121,14 @@ export class PoseViewer {
     this.applySelectionForHandles(selected, additive);
   }
 
+  private expandHandlesForSelection(handles: JointHandle[]) {
+    return handles.filter(Boolean) as JointHandle[];
+  }
+
   private applySelectionForHandles(handles: JointHandle[], additive: boolean) {
     this.clearCameraSelection();
-    const unique = Array.from(new Set(handles));
+    const expanded = this.expandHandlesForSelection(handles);
+    const unique = Array.from(new Set(expanded));
     if (!additive) {
       if (this.editingState.selectedHandles.length) {
         this.editingState.selectedHandles.forEach((selected) => {
@@ -1605,7 +1666,7 @@ export class PoseViewer {
       for (let i = 0; i < JOINT_COUNT; i++) {
         const baseColorArr = getJointBaseColor(i);
         const baseColor = new THREE.Color(baseColorArr[0], baseColorArr[1], baseColorArr[2]);
-        const mesh = new THREE.Mesh(JOINT_HANDLE_GEOMETRY, new THREE.MeshBasicMaterial({ color: baseColor }));
+        const mesh = new THREE.Mesh(JOINT_HANDLE_GEOMETRY, new THREE.MeshBasicMaterial({ color: baseColor })) as unknown as JointHandle;
         mesh.visible = false;
         mesh.userData = {
           baseColor,
@@ -1614,8 +1675,20 @@ export class PoseViewer {
           isSelected: false,
         };
         group.add(mesh);
-        jointHandles.push(mesh as JointHandle);
+        jointHandles.push(mesh);
       }
+
+      const rigHandle = new THREE.Mesh(RIG_HANDLE_GEOMETRY, new THREE.MeshBasicMaterial({ color: RIG_HANDLE_COLOR, transparent: true, opacity: 0.9, side: THREE.DoubleSide })) as unknown as JointHandle;
+      rigHandle.visible = false;
+      rigHandle.renderOrder = 8;
+      rigHandle.userData = {
+        baseColor: RIG_HANDLE_COLOR.clone(),
+        jointIndex: -1,
+        personIndex,
+        isSelected: false,
+        isRig: true,
+      };
+      group.add(rigHandle);
 
       this.peopleObjects.push({
         group,
@@ -1626,8 +1699,175 @@ export class PoseViewer {
         pointGeom,
         pointPositions,
         jointHandles,
+        rigHandle,
+        rigHandleHasPosition: false,
         personIndex,
       });
+    }
+  }
+
+  private computeRigHandlePosition(person: PosePerson) {
+    const points = Array.isArray(person.points) ? person.points : [];
+    const collect = (indices: number[]) => {
+      const picked: PosePoint[] = [];
+      indices.forEach((idx) => {
+        const p = points[idx];
+        if (Array.isArray(p) && p.length >= 3 && Number.isFinite(p[0]) && Number.isFinite(p[1]) && Number.isFinite(p[2])) {
+          picked.push(p as PosePoint);
+        }
+      });
+      return picked;
+    };
+    let candidates = collect([15, 16, 17, 18, 19, 20, 21, 22]);
+    if (!candidates.length) {
+      candidates = collect([11, 12, 13, 14, 5, 6]);
+    }
+    if (!candidates.length) {
+      candidates = collect(points.map((_, idx) => idx));
+    }
+    if (!candidates.length) return null;
+    let sumX = 0;
+    let sumZ = 0;
+    let minY = Number.POSITIVE_INFINITY;
+    candidates.forEach((p) => {
+      sumX += p[0];
+      sumZ += p[2];
+      if (p[1] < minY) minY = p[1];
+    });
+    const inv = 1 / candidates.length;
+    return new THREE.Vector3(sumX * inv, minY, sumZ * inv);
+  }
+
+  private computeRigHandleScale(person: PosePerson) {
+    const points = Array.isArray(person.points) ? person.points : [];
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    let count = 0;
+    points.forEach((p) => {
+      if (Array.isArray(p) && p.length >= 3 && Number.isFinite(p[1])) {
+        minY = Math.min(minY, p[1]);
+        maxY = Math.max(maxY, p[1]);
+        count++;
+      }
+    });
+    if (!count || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      return 1;
+    }
+    const height = Math.max(1e-3, maxY - minY);
+    return Math.min(1.6, Math.max(0.7, height * 0.5));
+  }
+
+  private makeRigKey(personIndex: number) {
+    return `rig:${personIndex}`;
+  }
+
+  private setRigKeyframeTransform(frameIndex: number, personIndex: number, transform: RigTransform) {
+    let personMap = this.rigKeyframes.get(frameIndex);
+    if (!personMap) {
+      personMap = new Map<number, RigTransform>();
+      this.rigKeyframes.set(frameIndex, personMap);
+    }
+    personMap.set(personIndex, cloneRigTransform(transform));
+  }
+
+  private clearRigKeyframe(frameIndex: number, personIndex?: number) {
+    if (!this.rigKeyframes.has(frameIndex)) return;
+    if (typeof personIndex === 'number') {
+      const personMap = this.rigKeyframes.get(frameIndex);
+      personMap?.delete(personIndex);
+      if (!personMap?.size) {
+        this.rigKeyframes.delete(frameIndex);
+      }
+      return;
+    }
+    this.rigKeyframes.delete(frameIndex);
+  }
+
+  private getRigKeyframeTransform(frameIndex: number, personIndex: number): RigTransform | null {
+    const personMap = this.rigKeyframes.get(frameIndex);
+    const transform = personMap?.get(personIndex);
+    return transform ? cloneRigTransform(transform) : null;
+  }
+
+  private getRigKeyframeFramesForPerson(personIndex: number) {
+    const frames: number[] = [];
+    this.rigKeyframes.forEach((personMap, frameIdx) => {
+      if (personMap.has(personIndex)) {
+        frames.push(frameIdx);
+      }
+    });
+    return frames.sort((a, b) => a - b);
+  }
+
+  private getRigTransformForFrame(frameIndex: number, personIndex: number): RigTransform {
+    const frames = this.getRigKeyframeFramesForPerson(personIndex);
+    if (!frames.length) return identityRigTransform();
+    if (frames.includes(frameIndex)) {
+      const exact = this.getRigKeyframeTransform(frameIndex, personIndex);
+      return exact ?? identityRigTransform();
+    }
+    let prev = -1;
+    let next = -1;
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i];
+      if (frame < frameIndex) prev = frame;
+      if (frame > frameIndex) {
+        next = frame;
+        break;
+      }
+    }
+    if (prev < 0) {
+      return this.getRigKeyframeTransform(next, personIndex) ?? identityRigTransform();
+    }
+    if (next < 0) {
+      return this.getRigKeyframeTransform(prev, personIndex) ?? identityRigTransform();
+    }
+    const a = this.getRigKeyframeTransform(prev, personIndex) ?? identityRigTransform();
+    const b = this.getRigKeyframeTransform(next, personIndex) ?? identityRigTransform();
+    const t = (frameIndex - prev) / (next - prev);
+    return interpolateRigTransforms(a, b, t);
+  }
+
+  private getDisplayToDataMatrices() {
+    const gain = this.depthGain || 1;
+    const toDisplay = new THREE.Matrix4().makeScale(1, 1, gain);
+    const toData = new THREE.Matrix4().makeScale(1, 1, gain !== 0 ? 1 / gain : 1);
+    return { toDisplay, toData };
+  }
+
+  private displayMatrixToDataSpace(matrix: THREE.Matrix4) {
+    const { toDisplay, toData } = this.getDisplayToDataMatrices();
+    return new THREE.Matrix4().copy(toData).multiply(matrix).multiply(toDisplay);
+  }
+
+  private getRigMatrixForFrame(frameIndex: number, personIndex: number) {
+    const transform = this.getRigTransformForFrame(frameIndex, personIndex);
+    return rigTransformToMatrix(transform);
+  }
+
+  private applyRigTransformsToFrames(refreshDisplay = true) {
+    if (!this.rigBaseFrames.length) {
+      this.rigBaseFrames = clonePoseFrames(this.frames);
+    }
+    const newFrames = clonePoseFrames(this.rigBaseFrames);
+    for (let frameIndex = 0; frameIndex < newFrames.length; frameIndex++) {
+      const frame = newFrames[frameIndex];
+      const people = frame.people || [];
+      people.forEach((person, personIndex) => {
+        const matrix = this.getRigMatrixForFrame(frameIndex, personIndex);
+        if (isIdentityMatrix(matrix)) return;
+        person.points = (person.points || []).map((point) => {
+          if (!Array.isArray(point) || point.length < 3) return point;
+          const vec = new THREE.Vector3(point[0], point[1], point[2]).applyMatrix4(matrix);
+          return [vec.x, vec.y, vec.z];
+        });
+      });
+    }
+    this.frames = newFrames;
+    if (refreshDisplay && this.displayedFrame >= 0) {
+      this.showFrame(this.displayedFrame);
+    } else if (refreshDisplay) {
+      this.emitKeyframeState();
     }
   }
 
@@ -1679,6 +1919,19 @@ export class PoseViewer {
     obj.jointHandles.forEach((handle) => {
       handle.visible = this.editingState.enabled;
     });
+    const rigHandle = obj.rigHandle;
+    if (rigHandle) {
+      rigHandle.userData.personIndex = personIndex;
+      rigHandle.userData.jointIndex = -1;
+      const rigPosition = this.computeRigHandlePosition(person);
+      obj.rigHandleHasPosition = Boolean(rigPosition);
+      if (rigPosition) {
+        rigHandle.position.set(rigPosition.x, rigPosition.y, rigPosition.z * this.depthGain);
+        const rigScale = this.computeRigHandleScale(person) * 2;
+        rigHandle.scale.setScalar(rigScale);
+      }
+      rigHandle.visible = this.editingState.enabled && obj.group.visible && obj.rigHandleHasPosition;
+    }
   }
 
   private updateJointHandleVisibility() {
@@ -1687,6 +1940,9 @@ export class PoseViewer {
       obj.jointHandles.forEach((handle) => {
         handle.visible = shouldShow;
       });
+      if (obj.rigHandle) {
+        obj.rigHandle.visible = shouldShow && obj.rigHandleHasPosition;
+      }
     });
   }
 
@@ -1695,6 +1951,10 @@ export class PoseViewer {
       const obj = this.peopleObjects[i];
       obj.group.visible = false;
       obj.jointHandles.forEach((h) => (h.visible = false));
+      if (obj.rigHandle) {
+        obj.rigHandle.visible = false;
+        obj.rigHandleHasPosition = false;
+      }
     }
   }
 
@@ -1702,7 +1962,6 @@ export class PoseViewer {
     if (!handle || handle.userData.isSelected === selected) return;
     handle.userData.isSelected = selected;
     if (selected) {
-      console.log('setHandleSelected', handle.userData.jointIndex, selected);
       handle.material.color.copy(SELECTED_HANDLE_COLOR);
     } else {
       handle.material.color.copy(handle.userData.baseColor);
@@ -1737,6 +1996,16 @@ export class PoseViewer {
         hasSelection: false,
       });
     } else {
+      const rigHandles = this.editingState.selectedHandles.filter((h) => h.userData.isRig);
+      if (rigHandles.length) {
+        const persons = Array.from(new Set(rigHandles.map((h) => h.userData.personIndex + 1))).sort((a, b) => a - b);
+        const label = persons.length === 1 ? `Rig selected (Person ${persons[0]})` : `Rig selected (People ${persons.join(', ')})`;
+        this.callbacks.onSelectionInfoChange({
+          text: `${label}. Transforms move every joint for that person.`,
+          hasSelection: true,
+        });
+        return;
+      }
       this.callbacks.onSelectionInfoChange({
         text: `${this.editingState.selectedHandles.length} joint(s) selected`,
         hasSelection: true,
@@ -1788,14 +2057,44 @@ export class PoseViewer {
     const quaternionStart = this.editingState.selectionProxy.quaternion.clone();
     const scaleStart = this.editingState.selectionProxy.scale.clone();
     const startMatrix = new THREE.Matrix4().compose(positionStart, quaternionStart, scaleStart);
-    const session: TransformSession = {
-      startMatrix,
-      inverseStartMatrix: new THREE.Matrix4().copy(startMatrix).invert(),
-      handles: this.editingState.selectedHandles.map((handle) => ({
+    const rigPersons = new Set<number>();
+    this.editingState.selectedHandles.forEach((handle) => {
+      if (handle.userData.isRig) {
+        rigPersons.add(handle.userData.personIndex);
+      }
+    });
+    const extraHandles: TransformSessionEntry[] = [];
+    rigPersons.forEach((personIndex) => {
+      const obj = this.peopleObjects[personIndex];
+      if (!obj) return;
+      obj.jointHandles.forEach((h) => {
+        extraHandles.push({
+          handle: h,
+          personIndex,
+          jointIndex: h.userData.jointIndex,
+          startPosition: h.position.clone(),
+          skipKeyframe: true,
+        });
+      });
+    });
+    const combinedEntries: TransformSessionEntry[] = [
+      ...this.editingState.selectedHandles.map((handle) => ({
         handle,
         personIndex: handle.userData.personIndex,
         jointIndex: handle.userData.jointIndex,
         startPosition: handle.position.clone(),
+      })),
+      ...extraHandles,
+    ];
+    const session: TransformSession = {
+      startMatrix,
+      inverseStartMatrix: new THREE.Matrix4().copy(startMatrix).invert(),
+      handles: combinedEntries.map((entry) => ({
+        handle: entry.handle,
+        personIndex: entry.personIndex,
+        jointIndex: entry.jointIndex,
+        startPosition: entry.startPosition.clone(),
+        skipKeyframe: entry.skipKeyframe,
       })),
     };
     this.editingState.transformSession = session;
@@ -1812,7 +2111,8 @@ export class PoseViewer {
     this.tempMatrixA.copy(currentMatrix).multiply(session.inverseStartMatrix);
     session.handles.forEach((entry) => {
       this.tempVector3.copy(entry.startPosition).applyMatrix4(this.tempMatrixA);
-      this.updateHandlePosition(entry.handle, this.tempVector3, entry.personIndex, entry.jointIndex);
+      const commit = !entry.skipKeyframe && !entry.handle.userData.isRig;
+      this.updateHandlePosition(entry.handle, this.tempVector3, entry.personIndex, entry.jointIndex, commit);
     });
   }
 
@@ -1821,14 +2121,54 @@ export class PoseViewer {
     const frameIndex = this.displayedFrame;
     if (frameIndex < 0) return;
     let changed = false;
+    let rigChanged = false;
     session.handles.forEach((entry) => {
       const { startPosition, handle, personIndex, jointIndex } = entry;
-      if (personIndex < 0 || jointIndex < 0) return;
+      if (personIndex < 0) return;
+      if (handle.userData.isRig) {
+        if (startPosition.distanceToSquared(handle.position) >= POSITION_EPSILON_SQ) {
+          rigChanged = true;
+        }
+        return;
+      }
+      if (jointIndex < 0) return;
+      if (entry.skipKeyframe) return;
       if (startPosition.distanceToSquared(handle.position) < POSITION_EPSILON_SQ) return;
       if (this.syncKeyframeForJoint(frameIndex, personIndex, jointIndex, handle.position)) {
         changed = true;
       }
     });
+    if (rigChanged) {
+      const rigPersons = new Set<number>();
+      session.handles.forEach((entry) => {
+        if (entry.handle.userData.isRig && entry.personIndex >= 0) {
+          rigPersons.add(entry.personIndex);
+        }
+      });
+      const endMatrix = new THREE.Matrix4().compose(
+        this.editingState.selectionProxy.position.clone(),
+        this.editingState.selectionProxy.quaternion.clone(),
+        this.editingState.selectionProxy.scale.clone()
+      );
+      const deltaDisplay = new THREE.Matrix4().copy(endMatrix).multiply(session.inverseStartMatrix);
+      const deltaData = this.displayMatrixToDataSpace(deltaDisplay);
+      rigPersons.forEach((personIndex) => {
+        const key = this.makeRigKey(personIndex);
+        let frameEntry = this.frameKeyframes.get(frameIndex);
+        if (!frameEntry) {
+          frameEntry = new Set<string>();
+          this.frameKeyframes.set(frameIndex, frameEntry);
+        }
+        frameEntry.add(key);
+        const prevTransform = this.getRigKeyframeTransform(frameIndex, personIndex) ?? identityRigTransform();
+        const prevMatrix = rigTransformToMatrix(prevTransform);
+        const nextMatrix = new THREE.Matrix4().copy(deltaData).multiply(prevMatrix);
+        const nextTransform = matrixToRigTransform(nextMatrix);
+        this.setRigKeyframeTransform(frameIndex, personIndex, nextTransform);
+      });
+      this.applyRigTransformsToFrames();
+      changed = true;
+    }
     if (changed) {
       this.emitKeyframeState();
     }
@@ -1887,22 +2227,52 @@ export class PoseViewer {
     this.callbacks.onKeyframeStateChange?.({ framesWithKeyframes, hasKeyframeAtCurrent });
   }
 
-  private updateHandlePosition(handle: JointHandle, vec: THREE.Vector3, personIndex: number, jointIndex: number) {
+  private updateHandlePosition(handle: JointHandle, vec: THREE.Vector3, personIndex: number, jointIndex: number, commitToFrame = true) {
     handle.position.copy(vec);
-    this.commitJointPosition(personIndex, jointIndex, vec);
+    if (handle.userData.isRig || jointIndex < 0) return;
+    if (commitToFrame) {
+      this.commitJointPosition(personIndex, jointIndex, vec);
+    } else {
+      this.updateGeometryForJoint(personIndex, jointIndex, vec);
+    }
   }
 
   private commitJointPosition(personIndex: number, jointIndex: number, displayVec: THREE.Vector3) {
     if (!this.frames.length || this.displayedFrame < 0) return;
-    const frame = this.frames[this.displayedFrame];
+    const frameIndex = this.displayedFrame;
+    const frame = this.frames[frameIndex];
     if (!frame || !Array.isArray(frame.people)) return;
     const person = frame.people[personIndex];
     if (!person || !Array.isArray(person.points)) return;
     const point = person.points[jointIndex];
     if (!Array.isArray(point) || point.length < 3) return;
-    point[0] = displayVec.x;
-    point[1] = displayVec.y;
-    point[2] = this.depthGain !== 0 ? displayVec.z / this.depthGain : displayVec.z;
+    const dataVec = new THREE.Vector3(displayVec.x, displayVec.y, this.depthGain !== 0 ? displayVec.z / this.depthGain : displayVec.z);
+    point[0] = dataVec.x;
+    point[1] = dataVec.y;
+    point[2] = dataVec.z;
+    if (frameIndex >= 0) {
+      if (!this.rigBaseFrames[frameIndex]) {
+        this.rigBaseFrames[frameIndex] = clonePoseFrame(frame);
+      }
+      const baseFrame = this.rigBaseFrames[frameIndex];
+      const basePerson = baseFrame?.people?.[personIndex];
+      const basePoint = basePerson?.points?.[jointIndex];
+      if (basePoint) {
+        const rigMatrix = this.getRigMatrixForFrame(frameIndex, personIndex);
+        const baseVec = dataVec.clone();
+        if (!isIdentityMatrix(rigMatrix)) {
+          const inv = this.tempMatrixA.copy(rigMatrix);
+          const det = inv.determinant();
+          if (Math.abs(det) > 1e-12) {
+            inv.invert();
+            baseVec.applyMatrix4(inv);
+          }
+        }
+        basePoint[0] = baseVec.x;
+        basePoint[1] = baseVec.y;
+        basePoint[2] = baseVec.z;
+      }
+    }
     this.updateGeometryForJoint(personIndex, jointIndex, displayVec);
   }
 
@@ -1965,12 +2335,43 @@ export class PoseViewer {
     const baseFrame = this.baseFrames[target];
     if (!baseFrame) return;
     this.frames[target] = clonePoseFrame(baseFrame);
+    this.rigBaseFrames[target] = clonePoseFrame(baseFrame);
+    this.clearRigKeyframe(target);
     this.frameKeyframes.delete(target);
+    this.applyRigTransformsToFrames(false);
     if (this.displayedFrame === target) {
       this.showFrame(target);
     } else {
       this.emitKeyframeState();
     }
+  }
+
+  addKeyframeForSelection() {
+    if (!this.editingState.enabled) return false;
+    const frameIndex = this.displayedFrame;
+    if (frameIndex < 0 || frameIndex >= this.frames.length) return false;
+    if (!this.editingState.selectedHandles.length) return false;
+    let frameEntry = this.frameKeyframes.get(frameIndex);
+    if (!frameEntry) {
+      frameEntry = new Set<string>();
+      this.frameKeyframes.set(frameIndex, frameEntry);
+    }
+    this.editingState.selectedHandles.forEach((handle) => {
+      const personIndex = handle.userData.personIndex;
+      const jointIndex = handle.userData.jointIndex;
+      if (personIndex < 0) return;
+      if (handle.userData.isRig) {
+        frameEntry?.add(this.makeRigKey(personIndex));
+        if (!this.getRigKeyframeTransform(frameIndex, personIndex)) {
+          this.setRigKeyframeTransform(frameIndex, personIndex, identityRigTransform());
+        }
+        return;
+      }
+      if (jointIndex < 0) return;
+      frameEntry?.add(makeJointKey(personIndex, jointIndex));
+    });
+    this.emitKeyframeState();
+    return true;
   }
 
   private prepareRayFromEvent(event: PointerEvent | MouseEvent) {
@@ -2000,7 +2401,8 @@ export class PoseViewer {
     const visibleHandles: JointHandle[] = [];
     this.peopleObjects.forEach((obj) => {
       if (!obj.group.visible) return;
-      obj.jointHandles.forEach((handle) => {
+      const handles = obj.rigHandle ? [...obj.jointHandles, obj.rigHandle] : obj.jointHandles;
+      handles.forEach((handle) => {
         if (handle.visible) visibleHandles.push(handle);
       });
     });
@@ -2044,8 +2446,10 @@ export class PoseViewer {
       const payload: PosePayload = JSON.parse(jsonText);
       const parsedFrames = payload.frames || [];
       this.baseFrames = clonePoseFrames(parsedFrames);
+      this.rigBaseFrames = clonePoseFrames(parsedFrames);
       this.frames = clonePoseFrames(parsedFrames);
       this.frameKeyframes.clear();
+      this.rigKeyframes.clear();
       this.cameraKeyframes.clear();
       this.cameraLocked = false;
       this.lastVideoSyncFrame = -1;
@@ -2161,6 +2565,7 @@ export class PoseViewer {
     if (!baseFrame || !currentFrame) return [];
 
     keys.forEach((key) => {
+      if (key.startsWith('rig:')) return;
       const [personIndexStr, jointIndexStr] = key.split(':');
       const personIndex = parseInt(personIndexStr, 10);
       const jointIndex = parseInt(jointIndexStr, 10);

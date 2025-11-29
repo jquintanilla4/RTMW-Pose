@@ -6,6 +6,7 @@ interface PropertiesPanelProps {
     selectionInfo: string
     hasSelection: boolean
     onClearSelection: () => void
+    onAddKeyframe: () => void
     onResetFrame: () => void
     canResetFrame: boolean
     depthGain: number
@@ -43,6 +44,7 @@ export function PropertiesPanel({
     selectionInfo,
     hasSelection,
     onClearSelection,
+    onAddKeyframe,
     onResetFrame,
     canResetFrame,
     depthGain,
@@ -113,6 +115,13 @@ export function PropertiesPanel({
                                 style={{ flex: 1 }}
                             >
                                 Clear Select
+                            </button>
+                            <button
+                                onClick={onAddKeyframe}
+                                disabled={!hasSelection}
+                                style={{ flex: 1 }}
+                            >
+                                Add Keyframe
                             </button>
                             <button
                                 onClick={onResetFrame}
