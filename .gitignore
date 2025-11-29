@@ -35,3 +35,6 @@ bun-debug.log*
 
 # Ignore stray lockfile in web root; actual app is in web/threejs_viewer
 web/package-lock.json
+
+# CLI MDs
+[Aa][Gg][Ee][Nn][Tt][Ss].md

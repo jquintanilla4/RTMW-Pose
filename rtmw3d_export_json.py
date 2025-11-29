@@ -31,6 +31,7 @@ def normalize_pose(points, scores, min_score, z_gain):
         centered = np.zeros_like(points)
     else:
         centered, center, scale = center_and_scale(points, valid_mask=valid, z_gain=z_gain)
+        centered[:, 0] *= -1.0  # flip X so +X matches screen-right in the viewer
         centered[:, 1] *= -1.0  # Y-up for the viewer
     return centered, valid, center, scale
 
