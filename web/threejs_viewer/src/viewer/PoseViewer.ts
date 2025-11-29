@@ -1643,7 +1643,7 @@ export class PoseViewer {
     }
     if (!this.editingState.selectedHandles.length) {
       this.callbacks.onSelectionInfoChange({
-        text: 'Hold Cmd/Ctrl then click or drag to select. Shift adds/removes.',
+        text: 'Hold cmd/ctrl + click or drag to select. Shift adds/removes.',
         hasSelection: false,
       });
     } else {

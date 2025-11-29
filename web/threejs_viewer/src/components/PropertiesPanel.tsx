@@ -106,7 +106,7 @@ export function PropertiesPanel({
                             {selectionInfo}
                         </div>
 
-                        <div className="button-row" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                        <div className="button-row button-row-plain" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                             <button
                                 onClick={onClearSelection}
                                 disabled={!hasSelection}
