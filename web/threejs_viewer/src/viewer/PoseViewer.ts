@@ -1306,11 +1306,11 @@ export class PoseViewer {
         toneMapped: false,
         depthTest: false,
         depthWrite: false,
-        transparent: true,
+        transparent: false,
       });
       const geometry = new THREE.PlaneGeometry(1, 1);
       const mesh = new THREE.Mesh(geometry, material);
-      mesh.renderOrder = -1;
+      mesh.renderOrder = -100;
       mesh.name = 'CameraReferenceVideo';
       this.cameraVideoMesh = mesh;
       this.shotCamera.add(mesh);
