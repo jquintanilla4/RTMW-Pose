@@ -75,6 +75,8 @@ bash render.sh
 ```
 That produces `output.mp4`.
 
+Important Note: Must have FFMPEG installed on local host to run .sh file and produce an output.mp4 file.
+
 ## Troubleshooting
 - “**Blank / nothing shows up**”: the JSON may have zero detected people for those frames; try a clearer clip, higher resolution, or lower `--min-score`.
 - “**It’s slow / browser crashes during export**”: export fewer frames (shorter clip, higher `--step`) or lower your playback FPS before exporting.
