@@ -1,0 +1,7 @@
+numpy
+opencv-python
+onnxruntime
+rtmlib
+matplotlib
+open3d
+tqdm

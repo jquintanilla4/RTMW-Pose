@@ -17,7 +17,7 @@ You only need this if you already have a pose `.json` file to open (made by you,
 1) Install Node.js (version 18 or newer): https://nodejs.org/
 2) In a Terminal, from the repo folder:
 ```bash
-cd web/threejs_viewer
+cd web
 npm install
 npm run dev
 ```
@@ -28,32 +28,41 @@ npm run dev
 If you want to share this with a community, you can build it once and host it like a normal website.
 
 ```bash
-cd web/threejs_viewer
+cd web
 npm install
 npm run build
 ```
 
-Then upload everything inside `web/threejs_viewer/dist/` to any static host (GitHub Pages, Netlify, etc.).
+Then upload everything inside `web/dist/` to any static host (GitHub Pages, Netlify, etc.).
 
 ## Make a pose JSON from a video (Python)
 This step runs the RTMW3D‑x model on your video and writes a `.json` the editor can read.
 
-1) Install Python 3.10+.
-2) Install the Python packages:
+1) Install uv (Python manager) and create a Python 3.12.
 ```bash
-python3 -m pip install rtmlib opencv-python numpy onnxruntime
+uv venv --python 3.12 .venv
 ```
-3) Run the exporter:
+2) Activate a virtual environment:
 ```bash
-python3 rtmw3d_export_json.py --video path/to/video.mp4 --output exports/poses.json
+source .venv/bin/activate
+```
+(On Windows: `.venv\\Scripts\\activate`.)
+
+3) Install the Python packages:
+```bash
+uv pip install -r requirements.txt
+```
+4) Run the exporter:
+```bash
+python rtmw3d_export_json.py --video path/to/video.mp4 --output exports/poses.json --step 2 --max-edge 720 --z-gain 1
 ```
 
-(On Windows, try `python` or `py` instead of `python3`.)
+(On Windows, use the `python` from the activated venv.)
 
 Notes:
 - The first run downloads a model file into `models/` (so it needs internet).
 - If your video is long, start with fewer frames:
-  - `--step 2` processes every other frame (faster, smaller file)
+  - `--step 2` processes every other frame (faster, smoother, smaller file)
   - `--max-frames 300` stops early
 
 ## Using the editor (the basics)
@@ -80,7 +89,7 @@ Important Note: Must have FFMPEG installed on local host to run .sh file and pro
 ## Troubleshooting
 - “**Blank / nothing shows up**”: the JSON may have zero detected people for those frames; try a clearer clip, higher resolution, or lower `--min-score`.
 - “**It’s slow / browser crashes during export**”: export fewer frames (shorter clip, higher `--step`) or lower your playback FPS before exporting.
-- “**Python can’t find a package**”: make sure you’re using the same `python3` you installed packages into (`python3 -m pip ...`).
+- “**Python can’t find a package**”: make sure your uv venv is activated and you’re using its `python`.
 
 ## Advanced / reference
 <details>
